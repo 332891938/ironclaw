@@ -924,7 +924,7 @@ impl WasmChannel {
         }
 
         let (start_result, mut host_state) = self.execute_on_start_with_state().await?;
-        self.log_on_start_host_state(&mut host_state);
+        Self::flush_host_logs_for_channel(&self.name, &mut host_state);
 
         match start_result {
             Ok(_) => Ok(()),
@@ -1173,17 +1173,23 @@ impl WasmChannel {
         )
     }
 
-    fn log_on_start_host_state(&self, host_state: &mut ChannelHostState) {
+    fn flush_host_logs_for_channel(channel_name: &str, host_state: &mut ChannelHostState) {
         for entry in host_state.take_logs() {
             match entry.level {
-                crate::tools::wasm::LogLevel::Error => {
-                    tracing::error!(channel = %self.name, "{}", entry.message);
+                crate::tools::wasm::LogLevel::Trace => {
+                    tracing::trace!(channel = %channel_name, "{}", entry.message);
+                }
+                crate::tools::wasm::LogLevel::Debug => {
+                    tracing::debug!(channel = %channel_name, "{}", entry.message);
+                }
+                crate::tools::wasm::LogLevel::Info => {
+                    tracing::info!(channel = %channel_name, "{}", entry.message);
                 }
                 crate::tools::wasm::LogLevel::Warn => {
-                    tracing::warn!(channel = %self.name, "{}", entry.message);
+                    tracing::warn!(channel = %channel_name, "{}", entry.message);
                 }
-                _ => {
-                    tracing::debug!(channel = %self.name, "{}", entry.message);
+                crate::tools::wasm::LogLevel::Error => {
+                    tracing::error!(channel = %channel_name, "{}", entry.message);
                 }
             }
         }
@@ -1275,7 +1281,7 @@ impl WasmChannel {
         }
 
         let (config_result, mut host_state) = self.execute_on_start_with_state().await?;
-        self.log_on_start_host_state(&mut host_state);
+        Self::flush_host_logs_for_channel(&self.name, &mut host_state);
 
         let config = config_result?;
         tracing::info!(
@@ -1413,6 +1419,7 @@ impl WasmChannel {
                 // Process emitted messages
                 let emitted = host_state.take_emitted_messages();
                 self.process_emitted_messages(emitted).await?;
+                Self::flush_host_logs_for_channel(&self.name, &mut host_state);
 
                 tracing::debug!(
                     channel = %channel_name,
@@ -1499,6 +1506,7 @@ impl WasmChannel {
                 // Process emitted messages
                 let emitted = host_state.take_emitted_messages();
                 self.process_emitted_messages(emitted).await?;
+                Self::flush_host_logs_for_channel(&self.name, &mut host_state);
 
                 tracing::debug!(
                     channel = %channel_name,
@@ -1653,7 +1661,8 @@ impl WasmChannel {
 
         let channel_name = self.name.clone();
         match result {
-            Ok(Ok(((), _host_state))) => {
+            Ok(Ok(((), mut host_state))) => {
+                Self::flush_host_logs_for_channel(&self.name, &mut host_state);
                 tracing::debug!(
                     channel = %channel_name,
                     message_id = %message_id,
@@ -1775,7 +1784,8 @@ impl WasmChannel {
 
         let channel_name = self.name.clone();
         match result {
-            Ok(Ok(((), _host_state))) => {
+            Ok(Ok(((), mut host_state))) => {
+                Self::flush_host_logs_for_channel(&self.name, &mut host_state);
                 tracing::debug!(
                     channel = %channel_name,
                     "WASM channel on_broadcast completed"
@@ -1889,6 +1899,7 @@ impl WasmChannel {
         let capabilities = capabilities.clone();
         let credentials_snapshot = credentials.read().await.clone();
         let channel_name_owned = channel_name.to_string();
+        let channel_name_for_flush = channel_name_owned.clone();
 
         let result = tokio::time::timeout(timeout, async move {
             tokio::task::spawn_blocking(move || {
@@ -1907,6 +1918,9 @@ impl WasmChannel {
                     .call_on_status(&mut store, &wit_update)
                     .map_err(|e| Self::map_wasm_error(e, &prepared.name, prepared.limits.fuel))?;
 
+                let mut host_state =
+                    Self::extract_host_state(&mut store, &prepared.name, &capabilities);
+                Self::flush_host_logs_for_channel(&channel_name_for_flush, &mut host_state);
                 Ok(())
             })
             .await
@@ -2425,6 +2439,7 @@ impl WasmChannel {
 
         match result {
             Ok(Ok(mut host_state)) => {
+                Self::flush_host_logs_for_channel(channel_name, &mut host_state);
                 let emitted = host_state.take_emitted_messages();
                 tracing::debug!(
                     channel = %channel_name,
