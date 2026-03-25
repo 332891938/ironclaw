@@ -1,6 +1,7 @@
 [workspace]
 members = [".", "crates/ironclaw_safety"]
 exclude = [
+    "tauri-client",
     "channels-src/discord",
     "channels-src/telegram",
     "channels-src/slack",

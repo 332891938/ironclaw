@@ -1,0 +1,284 @@
+:root {
+  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 400;
+  color: #1b1f29;
+  background-color: #f4f6fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.top-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #ffffff;
+  border: 1px solid #e3e8f3;
+  border-radius: 12px;
+  padding: 10px 14px;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.brand .sub {
+  font-size: 12px;
+  color: #718096;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.top-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: #344054;
+  padding: 8px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.top-tab.active {
+  background: #eef3ff;
+  color: #1d4ed8;
+  border-color: #c8d7ff;
+}
+
+.status-strip {
+  display: flex;
+  justify-content: space-between;
+  background: #ffffff;
+  border: 1px solid #e3e8f3;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #4b5563;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.workspace-tools {
+  margin-bottom: 12px;
+}
+
+.workspace-tools-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.runtime-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#runtime-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid #dbe3f2;
+  color: #4b5563;
+}
+
+#runtime-status-pill.running {
+  border-color: #86efac;
+  color: #166534;
+  background: #f0fdf4;
+}
+
+.workspace-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gateway-token-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.gateway-token-row input {
+  flex: 1;
+  min-width: 280px;
+}
+
+.subtabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.subtab {
+  border: 1px solid #dbe3f2;
+  background: #ffffff;
+  color: #344054;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.subtab.active {
+  background: #eef3ff;
+  color: #1d4ed8;
+  border-color: #c8d7ff;
+}
+
+.subpanel {
+  display: none;
+}
+
+.subpanel.active {
+  display: block;
+}
+
+h1 {
+  margin: 0 0 12px;
+  font-size: 24px;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+p {
+  margin: 0;
+  color: #4b5563;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #e3e8f3;
+  border-radius: 12px;
+  padding: 14px;
+  min-height: 120px;
+}
+
+.form-grid {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.form-grid input,
+.form-grid select,
+button {
+  border: 1px solid #dbe3f2;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #ffffff;
+  color: #111827;
+}
+
+button {
+  cursor: pointer;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color: #f3f4f6;
+    background-color: #0f1218;
+  }
+
+  .top-nav,
+  .status-strip,
+  .card {
+    background: #171b23;
+    border-color: #2b3445;
+  }
+
+  .top-tab {
+    color: #d1d5db;
+  }
+
+  .top-tab.active {
+    background: #1e293b;
+    border-color: #334155;
+    color: #93c5fd;
+  }
+
+  .subtab {
+    background: #0f172a;
+    border-color: #334155;
+    color: #d1d5db;
+  }
+
+  .subtab.active {
+    background: #1e293b;
+    border-color: #334155;
+    color: #93c5fd;
+  }
+
+  #runtime-status-pill {
+    border-color: #334155;
+    color: #cbd5e1;
+    background: transparent;
+  }
+
+  #runtime-status-pill.running {
+    border-color: #14532d;
+    color: #86efac;
+    background: rgba(20, 83, 45, 0.2);
+  }
+
+  .form-grid input,
+  .form-grid select,
+  button {
+    background: #0f172a;
+    border-color: #334155;
+    color: #e5e7eb;
+  }
+
+  p,
+  .status-strip,
+  .brand .sub {
+    color: #9ca3af;
+  }
+}
