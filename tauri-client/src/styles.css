@@ -71,17 +71,6 @@ body {
   border-color: #c8d7ff;
 }
 
-.status-strip {
-  display: flex;
-  justify-content: space-between;
-  background: #ffffff;
-  border: 1px solid #e3e8f3;
-  border-radius: 12px;
-  padding: 10px 14px;
-  font-size: 13px;
-  color: #4b5563;
-}
-
 .tab-panel {
   display: none;
 }
@@ -192,6 +181,12 @@ p {
   min-height: 120px;
 }
 
+.console-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .form-grid {
   margin-top: 8px;
   display: grid;
@@ -228,7 +223,6 @@ button {
   }
 
   .top-nav,
-  .status-strip,
   .card {
     background: #171b23;
     border-color: #2b3445;
@@ -277,8 +271,8 @@ button {
   }
 
   p,
-  .status-strip,
   .brand .sub {
     color: #9ca3af;
   }
+
 }

@@ -13,7 +13,9 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "tauri-client",
+        "url": "https://ironclaw.axiayun.com/",
         "width": 1440,
         "height": 900,
         "minWidth": 1200,
@@ -21,7 +23,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": ["default"]
     }
   },
   "bundle": {

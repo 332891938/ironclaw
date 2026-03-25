@@ -22,6 +22,44 @@ type GatewayInfo = {
   token: string | null;
 };
 
+type TauriInternals = {
+  invoke?: (cmd: string, args?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
+  ipc?: unknown;
+  postMessage?: unknown;
+};
+
+const WORKSPACE_CONFIG_STORAGE_KEY = "ironclaw.workspace.config.v1";
+
+function getTauriInternals(): TauriInternals | undefined {
+  return (window as typeof window & { __TAURI_INTERNALS__?: TauriInternals }).__TAURI_INTERNALS__;
+}
+
+function buildBridgeStateText() {
+  const internals = getTauriInternals();
+  const hasInvoke = Boolean(internals?.invoke);
+  const hasIpc = Boolean(internals?.ipc);
+  const hasPostMessage = Boolean(internals?.postMessage);
+  const hasWindowIpc = Boolean((window as typeof window & { ipc?: unknown }).ipc);
+  return `origin=${location.origin}, invoke=${hasInvoke}, ipc=${hasIpc}, postMessage=${hasPostMessage}, window.ipc=${hasWindowIpc}`;
+}
+
+async function waitForTauriBridge(timeoutMs = 8000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const internals = getTauriInternals();
+    if (internals?.invoke) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Tauri IPC 未注入: ${buildBridgeStateText()}`);
+}
+
+async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
+  await waitForTauriBridge();
+  return invoke<T>(cmd, args);
+}
+
 window.addEventListener("DOMContentLoaded", () => {
   const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>(".top-tab"));
   const panels = Array.from(document.querySelectorAll<HTMLElement>(".tab-panel"));
@@ -32,10 +70,45 @@ window.addEventListener("DOMContentLoaded", () => {
   const stopBtn = document.querySelector<HTMLButtonElement>("#stop-ironclaw-btn");
   const applyGatewayTokenBtn = document.querySelector<HTMLButtonElement>("#apply-gateway-token-btn");
   const openConsoleLinkBtn = document.querySelector<HTMLButtonElement>("#open-console-link-btn");
+  const openConsoleLinkPanelBtn = document.querySelector<HTMLButtonElement>("#open-console-link-panel-btn");
+  const openConsoleWindowBtn = document.querySelector<HTMLButtonElement>("#open-console-window-btn");
   const gatewayTokenInput = document.querySelector<HTMLInputElement>("#gateway-token-input");
+  const workspaceConfigFields = Array.from(
+    document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+      "#panel-workspace [data-config-key]",
+    ),
+  );
   const runtimeResult = document.querySelector<HTMLElement>("#ironclaw-runtime-result");
   const runtimeStatusPill = document.querySelector<HTMLElement>("#runtime-status-pill");
   let currentGatewayUrl = "http://127.0.0.1:3000/";
+
+  function saveWorkspaceConfig() {
+    const config = workspaceConfigFields.reduce<Record<string, string>>((acc, field) => {
+      const key = field.dataset.configKey;
+      if (key) {
+        acc[key] = field.value;
+      }
+      return acc;
+    }, {});
+    localStorage.setItem(WORKSPACE_CONFIG_STORAGE_KEY, JSON.stringify(config));
+  }
+
+  function restoreWorkspaceConfig() {
+    const raw = localStorage.getItem(WORKSPACE_CONFIG_STORAGE_KEY);
+    if (!raw) {
+      return;
+    }
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    workspaceConfigFields.forEach((field) => {
+      const key = field.dataset.configKey;
+      if (!key) {
+        return;
+      }
+      if (Object.prototype.hasOwnProperty.call(parsed, key)) {
+        field.value = parsed[key] ?? "";
+      }
+    });
+  }
 
   function activateTab(tabId: string) {
     tabs.forEach((tab) => {
@@ -67,7 +140,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     runtimeResult.textContent = "检测中...";
     try {
-      const info = await invoke<IronclawRuntimeInfo>("detect_ironclaw_runtime");
+      const info = await invokeTauri<IronclawRuntimeInfo>("detect_ironclaw_runtime");
       runtimeResult.textContent = info.available ? "已安装" : "未安装";
     } catch (error) {
       runtimeResult.textContent = `检测失败: ${String(error)}`;
@@ -88,11 +161,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
   async function refreshGatewayInfo() {
     try {
-      const info = await invoke<GatewayInfo>("get_gateway_info");
+      const info = await invokeTauri<GatewayInfo>("get_gateway_info");
       setGatewayAddress(info.url);
       if (gatewayTokenInput) {
         gatewayTokenInput.value = info.token ?? "";
       }
+      saveWorkspaceConfig();
     } catch {
       setGatewayAddress("http://127.0.0.1:3000/");
     }
@@ -104,10 +178,11 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     runtimeResult.textContent = "正在应用 GATEWAY_AUTH_TOKEN...";
     try {
-      const info = await invoke<GatewayInfo>("set_gateway_auth_token", {
+      const info = await invokeTauri<GatewayInfo>("set_gateway_auth_token", {
         token: gatewayTokenInput.value,
       });
       setGatewayAddress(info.url);
+      saveWorkspaceConfig();
       runtimeResult.textContent = info.hasToken ? "Token 已应用" : "已清空自定义 Token，使用默认配置";
     } catch (error) {
       runtimeResult.textContent = `应用 Token 失败: ${String(error)}`;
@@ -116,7 +191,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   async function refreshIronclawRunStatus() {
     try {
-      const status = await invoke<IronclawRunStatus>("get_ironclaw_run_status");
+      const status = await invokeTauri<IronclawRunStatus>("get_ironclaw_run_status");
       setRuntimeStatus(status);
     } catch {
       setRuntimeStatus({ running: false, pid: null, message: "状态读取失败" });
@@ -129,7 +204,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     runtimeResult.textContent = "正在启动 ironclaw run...";
     try {
-      const status = await invoke<IronclawRunStatus>("start_ironclaw_run");
+      const status = await invokeTauri<IronclawRunStatus>("start_ironclaw_run");
       await refreshGatewayInfo();
       runtimeResult.textContent = status.message;
       setRuntimeStatus(status);
@@ -144,7 +219,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     runtimeResult.textContent = "正在停止 ironclaw run...";
     try {
-      const status = await invoke<IronclawRunStatus>("stop_ironclaw_run");
+      const status = await invokeTauri<IronclawRunStatus>("stop_ironclaw_run");
       runtimeResult.textContent = status.message;
       setRuntimeStatus(status);
     } catch (error) {
@@ -156,11 +231,31 @@ window.addEventListener("DOMContentLoaded", () => {
     await openUrl(currentGatewayUrl);
   }
 
+  async function openConsoleWindow() {
+    if (runtimeResult) {
+      runtimeResult.textContent = "正在应用内打开控制台...";
+    }
+    try {
+      await invokeTauri("open_console_window", { url: currentGatewayUrl });
+      if (runtimeResult) {
+        runtimeResult.textContent = "已在应用内打开控制台窗口";
+      }
+    } catch (error) {
+      if (runtimeResult) {
+        runtimeResult.textContent = `应用内窗口打开失败，已回退浏览器: ${String(error)}`;
+      }
+      await openConsoleLink();
+    }
+  }
+
   tabs.forEach((tab) => {
     tab.addEventListener("click", () => {
       const tabId = tab.dataset.tab;
       if (tabId) {
         activateTab(tabId);
+        if (tabId === "console") {
+          void openConsoleWindow();
+        }
       }
     });
   });
@@ -189,9 +284,23 @@ window.addEventListener("DOMContentLoaded", () => {
   openConsoleLinkBtn?.addEventListener("click", () => {
     void openConsoleLink();
   });
+  openConsoleLinkPanelBtn?.addEventListener("click", () => {
+    void openConsoleLink();
+  });
+  openConsoleWindowBtn?.addEventListener("click", () => {
+    void openConsoleWindow();
+  });
+  workspaceConfigFields.forEach((field) => {
+    field.addEventListener("input", saveWorkspaceConfig);
+    field.addEventListener("change", saveWorkspaceConfig);
+  });
 
   activateTab("workspace");
   activateSubtab("models");
+  restoreWorkspaceConfig();
+  if (runtimeResult) {
+    runtimeResult.textContent = "检测中...";
+  }
   void refreshGatewayInfo();
   void refreshIronclawRunStatus();
   void detectIronclawRuntime();

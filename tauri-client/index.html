@@ -44,7 +44,7 @@
             </div>
           </div>
           <div class="gateway-token-row">
-            <input id="gateway-token-input" type="password" placeholder="输入 GATEWAY_AUTH_TOKEN" />
+            <input id="gateway-token-input" type="password" placeholder="输入 GATEWAY_AUTH_TOKEN" data-config-key="gatewayToken" />
             <button id="apply-gateway-token-btn" type="button">应用 Token</button>
           </div>
           <p id="ironclaw-runtime-result">检测中...</p>
@@ -62,30 +62,30 @@
             <form class="form-grid">
               <label>
                 协议类型
-                <select>
+                <select data-config-key="modelProtocol">
                   <option>openai-completions</option>
                   <option>anthropic-messages</option>
                 </select>
               </label>
               <label>
                 Provider ID
-                <input placeholder="例如：proxy" />
+                <input placeholder="例如：proxy" data-config-key="modelProviderId" />
               </label>
               <label>
                 Base URL
-                <input placeholder="https://your-endpoint/v1" />
+                <input placeholder="https://your-endpoint/v1" data-config-key="modelBaseUrl" />
               </label>
               <label>
                 API Key
-                <input type="password" placeholder="输入 API Key" />
+                <input type="password" placeholder="输入 API Key" data-config-key="modelApiKey" />
               </label>
               <label>
                 模型 ID
-                <input placeholder="例如：deepseek-chat" />
+                <input placeholder="例如：deepseek-chat" data-config-key="modelId" />
               </label>
               <label>
                 默认模型引用
-                <input placeholder="自动生成：provider/model" />
+                <input placeholder="自动生成：provider/model" data-config-key="modelDefaultRef" />
               </label>
             </form>
           </article>
@@ -97,7 +97,7 @@
             <form class="form-grid">
               <label>
                 通道类型
-                <select>
+                <select data-config-key="channelType">
                   <option>Feishu</option>
                   <option>Telegram</option>
                   <option>Slack</option>
@@ -105,15 +105,15 @@
               </label>
               <label>
                 通道来源 URL
-                <input placeholder="WASM/registry 地址" />
+                <input placeholder="WASM/registry 地址" data-config-key="channelSourceUrl" />
               </label>
               <label>
                 App ID / Token
-                <input placeholder="输入通道鉴权字段" />
+                <input placeholder="输入通道鉴权字段" data-config-key="channelAppIdOrToken" />
               </label>
               <label>
                 App Secret
-                <input type="password" placeholder="输入通道密钥" />
+                <input type="password" placeholder="输入通道密钥" data-config-key="channelAppSecret" />
               </label>
             </form>
           </article>
@@ -125,19 +125,19 @@
             <form class="form-grid">
               <label>
                 工具名称
-                <input placeholder="例如：github" />
+                <input placeholder="例如：github" data-config-key="toolName" />
               </label>
               <label>
                 安装来源
-                <input placeholder="registry / URL / 本地目录" />
+                <input placeholder="registry / URL / 本地目录" data-config-key="toolInstallSource" />
               </label>
               <label>
                 执行命令
-                <input placeholder="工具入口命令" />
+                <input placeholder="工具入口命令" data-config-key="toolCommand" />
               </label>
               <label>
                 环境变量
-                <input placeholder="KEY=VALUE" />
+                <input placeholder="KEY=VALUE" data-config-key="toolEnv" />
               </label>
             </form>
           </article>
@@ -154,7 +154,11 @@
       <section id="panel-console" class="tab-panel" role="tabpanel">
         <h1>控制台</h1>
         <div class="card">
-          <p>点击“打开控制台”按钮可在浏览器访问控制台。</p>
+          <div class="console-toolbar">
+            <button id="open-console-window-btn" type="button">应用内窗口打开</button>
+            <button id="open-console-link-panel-btn" type="button">浏览器打开</button>
+          </div>
+          <p>切换到该页会自动在应用内窗口打开控制台，若未弹出可手动点击“应用内窗口打开”。</p>
         </div>
       </section>
     </main>

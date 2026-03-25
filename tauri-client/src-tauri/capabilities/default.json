@@ -2,7 +2,17 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "https://ironclaw.axiayun.com",
+      "https://ironclaw.axiayun.com/*",
+      "https://*.axiayun.com/*",
+      "http://localhost:1420/*",
+      "http://127.0.0.1:1420/*"
+    ]
+  },
+  "windows": ["*"],
+  "webviews": ["*"],
   "permissions": [
     "core:default",
     "opener:default"
