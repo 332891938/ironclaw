@@ -8,7 +8,9 @@
     "build": "tsc && vite build",
     "build:ironclaw-bin": "bash ./scripts/build-bundled-ironclaw.sh",
     "build:channels": "bash ./scripts/build-bundled-channels.sh",
-    "build:tauri-assets": "npm run build && npm run build:ironclaw-bin && npm run build:channels",
+    "build:tools": "bash ./scripts/build-bundled-tools.sh",
+    "build:skills": "bash ./scripts/build-bundled-skills.sh",
+    "build:tauri-assets": "npm run build && npm run build:ironclaw-bin && npm run build:channels && npm run build:tools && npm run build:skills",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
-type MainTab = "workspace" | "employees" | "console";
-type WorkspaceSubtab = "models" | "channels" | "tools" | "logs";
+type MainTab = "workspace" | "employees";
+type WorkspaceSubtab = "models" | "channels" | "tools" | "skills" | "logs";
 
 type IronclawRuntimeInfo = {
   configuredPath: string | null;
@@ -58,6 +58,18 @@ type ChannelSaveResult = {
   message: string;
 };
 
+type ToolSaveResult = {
+  toolName: string;
+  installedFiles: string[];
+  message: string;
+};
+
+type SkillSaveResult = {
+  skillName: string;
+  installedFiles: string[];
+  message: string;
+};
+
 type TauriInternals = {
   invoke?: (cmd: string, args?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
 };
@@ -75,8 +87,7 @@ type WorkspaceConfig = {
   channelVerificationToken: string;
   toolName: string;
   toolInstallSource: string;
-  toolCommand: string;
-  toolEnv: string;
+  skillInstallSource: string;
 };
 
 const WORKSPACE_CONFIG_STORAGE_KEY = "ironclaw.workspace.config.v1";
@@ -94,8 +105,7 @@ const EMPTY_CONFIG: WorkspaceConfig = {
   channelVerificationToken: "",
   toolName: "",
   toolInstallSource: "",
-  toolCommand: "",
-  toolEnv: "",
+  skillInstallSource: "",
 };
 
 function getTauriInternals(): TauriInternals | undefined {
@@ -253,6 +263,7 @@ function App() {
   const [runtimeResult, setRuntimeResult] = useState("检测中...");
   const [gatewayUrl, setGatewayUrl] = useState("http://127.0.0.1:3000/");
   const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig>(readStoredConfig);
+  const [bundledTools, setBundledTools] = useState<string[]>([]);
   const [logsContent, setLogsContent] = useState("");
 
   useEffect(() => {
@@ -415,6 +426,52 @@ function App() {
     }
   };
 
+  const saveToolConfig = async () => {
+    if (!workspaceConfig.toolName.trim()) {
+      setRuntimeResult("请选择或填写工具名称");
+      return;
+    }
+    setRuntimeResult("正在安装工具...");
+    try {
+      const result = await invokeTauri<ToolSaveResult>("save_tool_config", {
+        payload: {
+          toolName: workspaceConfig.toolName,
+          installSource: workspaceConfig.toolInstallSource || null,
+        },
+      });
+      setRuntimeResult(`${result.message}，已写入 ${result.installedFiles.length} 个文件`);
+    } catch (error) {
+      setRuntimeResult(`安装工具失败: ${String(error)}`);
+    }
+  };
+
+  const loadBundledTools = async () => {
+    try {
+      const tools = await invokeTauri<string[]>("get_bundled_tools");
+      setBundledTools(tools);
+    } catch {
+      setBundledTools([]);
+    }
+  };
+
+  const saveSkillConfig = async () => {
+    if (!workspaceConfig.skillInstallSource.trim()) {
+      setRuntimeResult("请输入技能 URL");
+      return;
+    }
+    setRuntimeResult("正在安装技能...");
+    try {
+      const result = await invokeTauri<SkillSaveResult>("save_skill_config", {
+        payload: {
+          installSource: workspaceConfig.skillInstallSource,
+        },
+      });
+      setRuntimeResult(`${result.message}，已写入 ${result.installedFiles.length} 个文件`);
+    } catch (error) {
+      setRuntimeResult(`安装技能失败: ${String(error)}`);
+    }
+  };
+
   const saveModelAndRestart = async () => {
     setRuntimeResult("正在保存模型配置并重启 ironclaw...");
     try {
@@ -451,8 +508,18 @@ function App() {
     void refreshIronclawRunStatus();
     void detectIronclawRuntime();
     void loadLaunchEnvConfig();
+    void loadBundledTools();
     void fetchIronclawLogs();
   }, []);
+
+  useEffect(() => {
+    if (!bundledTools.length) {
+      return;
+    }
+    if (!workspaceConfig.toolInstallSource.trim() && !workspaceConfig.toolName.trim()) {
+      setWorkspaceConfig((current) => ({ ...current, toolName: bundledTools[0] }));
+    }
+  }, [bundledTools, workspaceConfig.toolInstallSource, workspaceConfig.toolName]);
 
   useEffect(() => {
     const refreshChannelFields = async () => {
@@ -480,12 +547,6 @@ function App() {
     }, 1000);
     return () => window.clearInterval(timer);
   }, [activeSubtab]);
-
-  useEffect(() => {
-    if (activeTab === "console") {
-      void openConsoleWindow();
-    }
-  }, [activeTab]);
 
   const statusPillClassName = useMemo(
     () =>
@@ -528,7 +589,7 @@ function App() {
             <button type="button" className={tabClassName(activeTab === "employees")} onClick={() => setActiveTab("employees")}>
               数字员工
             </button>
-            <button type="button" className={tabClassName(activeTab === "console")} onClick={() => setActiveTab("console")}>
+            <button type="button" className={tabClassName(false)} onClick={() => void openConsoleWindow()}>
               控制台
             </button>
           </nav>
@@ -550,9 +611,6 @@ function App() {
                   </button>
                   <button type="button" className={buttonClassName} onClick={() => void stopIronclawRun()}>
                     停止
-                  </button>
-                  <button type="button" className={buttonClassName} onClick={() => void detectIronclawRuntime()}>
-                    检测
                   </button>
                   <button type="button" className={buttonClassName} onClick={() => void openConsoleLink()}>
                     打开控制台
@@ -583,6 +641,9 @@ function App() {
               </button>
               <button type="button" className={subtabClassName(activeSubtab === "tools")} onClick={() => setActiveSubtab("tools")}>
                 工具
+              </button>
+              <button type="button" className={subtabClassName(activeSubtab === "skills")} onClick={() => setActiveSubtab("skills")}>
+                技能
               </button>
               <button type="button" className={subtabClassName(activeSubtab === "logs")} onClick={() => setActiveSubtab("logs")}>
                 日志
@@ -714,42 +775,66 @@ function App() {
 
             {activeSubtab === "tools" && (
               <article className={cardClassName}>
-                <h2 className="mb-2 text-lg font-semibold">工具管理</h2>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold">工具管理</h2>
+                  <button type="button" className={buttonClassName} onClick={() => void saveToolConfig()}>
+                    安装工具
+                  </button>
+                </div>
                 <form className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <label className={labelClassName}>
                     工具名称
-                    <input
-                      className={inputClassName}
-                      placeholder="例如：github"
-                      value={workspaceConfig.toolName}
-                      onChange={(event) => updateConfig("toolName", event.target.value)}
-                    />
+                    {workspaceConfig.toolInstallSource.trim() ? (
+                      <input
+                        className={inputClassName}
+                        placeholder="例如：github"
+                        value={workspaceConfig.toolName}
+                        onChange={(event) => updateConfig("toolName", event.target.value)}
+                      />
+                    ) : (
+                      <select
+                        className={inputClassName}
+                        value={workspaceConfig.toolName}
+                        onChange={(event) => updateConfig("toolName", event.target.value)}
+                      >
+                        {!workspaceConfig.toolName && <option value="">请选择内置工具</option>}
+                        {bundledTools.map((tool) => (
+                          <option key={tool} value={tool}>
+                            {tool}
+                          </option>
+                        ))}
+                      </select>
+                    )}
                   </label>
                   <label className={labelClassName}>
                     安装来源
                     <input
                       className={inputClassName}
-                      placeholder="registry / URL / 本地目录"
+                      placeholder="留空=内置资源，或填写 https://xxx.zip"
                       value={workspaceConfig.toolInstallSource}
                       onChange={(event) => updateConfig("toolInstallSource", event.target.value)}
                     />
                   </label>
+                </form>
+              </article>
+            )}
+
+            {activeSubtab === "skills" && (
+              <article className={cardClassName}>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold">技能管理</h2>
+                  <button type="button" className={buttonClassName} onClick={() => void saveSkillConfig()}>
+                    安装技能
+                  </button>
+                </div>
+                <form className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <label className={labelClassName}>
-                    执行命令
+                    安装来源
                     <input
                       className={inputClassName}
-                      placeholder="工具入口命令"
-                      value={workspaceConfig.toolCommand}
-                      onChange={(event) => updateConfig("toolCommand", event.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    环境变量
-                    <input
-                      className={inputClassName}
-                      placeholder="KEY=VALUE"
-                      value={workspaceConfig.toolEnv}
-                      onChange={(event) => updateConfig("toolEnv", event.target.value)}
+                      placeholder="填写技能 URL，例如 https://xxx.zip 或 https://xxx/SKILL.md"
+                      value={workspaceConfig.skillInstallSource}
+                      onChange={(event) => updateConfig("skillInstallSource", event.target.value)}
                     />
                   </label>
                 </form>
@@ -781,24 +866,6 @@ function App() {
           </section>
         )}
 
-        {activeTab === "console" && (
-          <section className="flex flex-col gap-3">
-            <h1 className="text-2xl font-semibold">控制台</h1>
-            <article className={cardClassName}>
-              <div className="mb-2 flex gap-2">
-                <button type="button" className={buttonClassName} onClick={() => void openConsoleWindow()}>
-                  应用内窗口打开
-                </button>
-                <button type="button" className={buttonClassName} onClick={() => void openConsoleLink()}>
-                  浏览器打开
-                </button>
-              </div>
-              <p className="text-sm text-slate-600">
-                切换到该页会自动在应用内窗口打开控制台，若未弹出可手动点击“应用内窗口打开”。
-              </p>
-            </article>
-          </section>
-        )}
       </div>
     </main>
   );
