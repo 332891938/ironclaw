@@ -9,6 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +25,7 @@ struct IronclawRuntimeInfo {
 #[derive(Default)]
 struct AppState {
     ironclaw_child: Mutex<Option<Child>>,
+    tunnel_child: Mutex<Option<Child>>,
     gateway_auth_token: Mutex<Option<String>>,
     logs_buffer: Arc<Mutex<VecDeque<String>>>,
 }
@@ -141,6 +143,8 @@ struct TunnelSaveResult {
     config_path: String,
     binary_path: String,
     tunnel_url: String,
+    tunnel_pid: u32,
+    message: String,
 }
 
 const POSTMESSAGE_ONLY_INVOKE_SYSTEM: &str = r#"
@@ -562,21 +566,61 @@ fn generate_tunnel_node_id() -> String {
     format!("{:032x}{:016x}", mix, nanos & 0xffff_ffff_ffff_ffff)
 }
 
-fn update_workbot_yaml_field(content: &str, key: &str, value: &str) -> String {
+fn update_workbot_yaml_field_in_section(content: &str, section: &str, key: &str, value: &str) -> String {
     let mut updated = Vec::new();
-    let mut replaced = false;
-    let prefix = format!("  {key}:");
+    let mut current_section: Option<String> = None;
+    let mut replaced_in_target = false;
+    let target_prefix = format!("  {key}:");
+
     for line in content.lines() {
-        if line.trim_start().starts_with(&prefix) {
-            updated.push(format!("  {key}: \"{value}\""));
-            replaced = true;
-        } else {
-            updated.push(line.to_string());
+        let trimmed_end = line.trim_end();
+        if !trimmed_end.starts_with(' ') && trimmed_end.ends_with(':') {
+            let section_name = trimmed_end.trim_end_matches(':').trim().to_string();
+            current_section = Some(section_name);
+        }
+
+        if line.starts_with(&target_prefix) {
+            if current_section.as_deref() == Some(section) {
+                if !replaced_in_target {
+                    updated.push(format!("  {key}: \"{value}\""));
+                    replaced_in_target = true;
+                }
+                continue;
+            }
+            continue;
+        }
+
+        updated.push(line.to_string());
+    }
+
+    if !replaced_in_target {
+        let mut inserted = false;
+        let mut with_insert = Vec::new();
+        let mut current_section: Option<String> = None;
+
+        for line in &updated {
+            let trimmed_end = line.trim_end();
+            if !trimmed_end.starts_with(' ') && trimmed_end.ends_with(':') {
+                if current_section.as_deref() == Some(section) && !inserted {
+                    with_insert.push(format!("  {key}: \"{value}\""));
+                    inserted = true;
+                }
+                let section_name = trimmed_end.trim_end_matches(':').trim().to_string();
+                current_section = Some(section_name);
+            }
+            with_insert.push(line.clone());
+        }
+
+        if current_section.as_deref() == Some(section) && !inserted {
+            with_insert.push(format!("  {key}: \"{value}\""));
+            inserted = true;
+        }
+
+        if inserted {
+            return with_insert.join("\n");
         }
     }
-    if !replaced {
-        updated.push(format!("  {key}: \"{value}\""));
-    }
+
     updated.join("\n")
 }
 
@@ -1554,6 +1598,7 @@ fn save_skill_config(app: tauri::AppHandle, payload: SkillSavePayload) -> Result
 #[tauri::command]
 fn save_tunnel_config(
     app: tauri::AppHandle,
+    state: tauri::State<AppState>,
     payload: TunnelSavePayload,
 ) -> Result<TunnelSaveResult, String> {
     let username = payload.username.trim();
@@ -1575,9 +1620,9 @@ fn save_tunnel_config(
     let channel_slug = tunnel_channel_slug(&payload.channel_type).to_string();
     let (binary_path, config_path) = ensure_tunnel_runtime_assets(&app)?;
     let yaml_raw = fs::read_to_string(&config_path).map_err(|e| format!("读取 workbot.yaml 失败: {e}"))?;
-    let yaml_with_user = update_workbot_yaml_field(&yaml_raw, "username", username);
-    let yaml_with_password = update_workbot_yaml_field(&yaml_with_user, "password", password);
-    let yaml_updated = update_workbot_yaml_field(&yaml_with_password, "node_id", &node_id);
+    let yaml_with_node_id = update_workbot_yaml_field_in_section(&yaml_raw, "client", "node_id", &node_id);
+    let yaml_with_user = update_workbot_yaml_field_in_section(&yaml_with_node_id, "auth", "username", username);
+    let yaml_updated = update_workbot_yaml_field_in_section(&yaml_with_user, "auth", "password", password);
     fs::write(&config_path, yaml_updated).map_err(|e| format!("写入 workbot.yaml 失败: {e}"))?;
     let binary_name = binary_path
         .file_name()
@@ -1589,6 +1634,48 @@ fn save_tunnel_config(
     } else {
         format!("{binary_name} -config ./workbot.yaml")
     };
+    let workdir_path = binary_path
+        .parent()
+        .ok_or_else(|| "读取 tunnel 工作目录失败".to_string())?
+        .to_path_buf();
+    let tunnel_pid = {
+        let mut tunnel_guard = state
+            .tunnel_child
+            .lock()
+            .map_err(|_| "无法获取 tunnel 进程状态锁".to_string())?;
+        if let Some(existing) = tunnel_guard.as_mut() {
+            match existing.try_wait() {
+                Ok(Some(_)) => {
+                    *tunnel_guard = None;
+                }
+                Ok(None) => {
+                    let old_pid = existing.id();
+                    existing
+                        .kill()
+                        .map_err(|e| format!("停止旧 tunnel 进程失败 (pid={old_pid}): {e}"))?;
+                    let _ = existing.wait();
+                    *tunnel_guard = None;
+                }
+                Err(e) => {
+                    return Err(format!("检查旧 tunnel 进程状态失败: {e}"));
+                }
+            }
+        }
+        let mut tunnel_cmd = Command::new(&binary_path);
+        tunnel_cmd
+            .arg("-config")
+            .arg("./workbot.yaml")
+            .current_dir(&workdir_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let tunnel_child = tunnel_cmd
+            .spawn()
+            .map_err(|e| format!("启动 tunnel 客户端失败: {e}"))?;
+        let pid = tunnel_child.id();
+        *tunnel_guard = Some(tunnel_child);
+        pid
+    };
     let tunnel_url = format!(
         "https://workbot.axiayun.com/proxy/{username}/{node_id}/webhook/{channel_slug}?secret={verification_token}"
     );
@@ -1597,14 +1684,12 @@ fn save_tunnel_config(
         node_id,
         channel_slug,
         command,
-        workdir: binary_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .display()
-            .to_string(),
+        workdir: workdir_path.display().to_string(),
         config_path: config_path.display().to_string(),
         binary_path: binary_path.display().to_string(),
         tunnel_url,
+        tunnel_pid,
+        message: format!("通道配置已保存并重启 tunnel 进程 (pid={tunnel_pid})"),
     })
 }
 
@@ -1799,27 +1884,29 @@ fn get_ironclaw_run_status(state: tauri::State<AppState>) -> Result<IronclawRunS
 
 #[tauri::command]
 fn open_console_window(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    let parsed_url = url
+    let parsed_url: tauri::Url = url
         .parse()
         .map_err(|e| format!("控制台地址无效: {e}"))?;
-
-    if let Some(existing) = app.get_webview_window("console-window") {
-        let _ = existing.close();
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err("控制台地址仅支持 http/https".to_string());
     }
+    app.opener()
+        .open_url(parsed_url.as_str(), None::<&str>)
+        .map_err(|e| format!("打开系统浏览器失败: {e}"))?;
+    Ok(())
+}
 
-    tauri::WebviewWindowBuilder::new(
-        &app,
-        "console-window",
-        tauri::WebviewUrl::External(parsed_url),
-    )
-    .title("IronClaw 控制台")
-    .inner_size(1400.0, 900.0)
-    .min_inner_size(1100.0, 700.0)
-    .focused(true)
-    .center()
-    .build()
-    .map_err(|e| format!("创建控制台窗口失败: {e}"))?;
-
+#[tauri::command]
+fn open_console_popup_in_browser(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    let parsed_url: tauri::Url = url
+        .parse()
+        .map_err(|e| format!("弹窗地址无效: {e}"))?;
+    if !matches!(parsed_url.scheme(), "http" | "https") {
+        return Err("弹窗地址仅支持 http/https".to_string());
+    }
+    app.opener()
+        .open_url(parsed_url.as_str(), None::<&str>)
+        .map_err(|e| format!("打开系统浏览器失败: {e}"))?;
     Ok(())
 }
 
@@ -1844,7 +1931,8 @@ pub fn run() {
             start_ironclaw_run,
             stop_ironclaw_run,
             get_ironclaw_run_status,
-            open_console_window
+            open_console_window,
+            open_console_popup_in_browser
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

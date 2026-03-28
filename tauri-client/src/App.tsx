@@ -71,6 +71,8 @@ type TunnelSaveResult = {
   configPath: string;
   binaryPath: string;
   tunnelUrl: string;
+  tunnelPid: number;
+  message: string;
 };
 
 type TauriInternals = {
@@ -493,7 +495,7 @@ function App() {
       return;
     }
     const nodeId = workspaceConfig.tunnelNodeId.trim().length >= 32 ? workspaceConfig.tunnelNodeId.trim() : generateNodeId();
-    setRuntimeResult("正在写入 workbot.yaml 并生成通道命令...");
+    setRuntimeResult("正在保存 workbot.yaml 并重启 tunnel 进程...");
     try {
       const result = await invokeTauri<TunnelSaveResult>("save_tunnel_config", {
         payload: {
@@ -512,7 +514,7 @@ function App() {
         tunnelWorkdir: result.workdir,
         tunnelAddress: result.tunnelUrl,
       }));
-      setRuntimeResult(`通道配置已保存，启动命令：cd ${result.workdir} && ${result.command}`);
+      setRuntimeResult(`${result.message}，启动命令：cd ${result.workdir} && ${result.command}`);
     } catch (error) {
       setRuntimeResult(`保存通道启动配置失败: ${String(error)}`);
     }
@@ -582,17 +584,6 @@ function App() {
 
   const openConsoleLink = async () => {
     await openUrl(gatewayUrl);
-  };
-
-  const openConsoleWindow = async () => {
-    setRuntimeResult("正在应用内打开控制台...");
-    try {
-      await invokeTauri("open_console_window", { url: gatewayUrl });
-      setRuntimeResult("已在应用内打开控制台窗口");
-    } catch (error) {
-      setRuntimeResult(`应用内窗口打开失败，已回退浏览器: ${String(error)}`);
-      await openConsoleLink();
-    }
   };
 
   useEffect(() => {
@@ -724,9 +715,6 @@ function App() {
             </button>
             <button type="button" className={tabClassName(activeTab === "employees")} onClick={() => setActiveTab("employees")}>
               数字员工
-            </button>
-            <button type="button" className={tabClassName(false)} onClick={() => void openConsoleWindow()}>
-              控制台
             </button>
           </nav>
         </header>
@@ -955,7 +943,7 @@ function App() {
                 </div>
                 <div className="mt-3 flex flex-col gap-2">
                   <p className={textMutedClassName}>运行目录：{workspaceConfig.tunnelWorkdir || "~/.ironclaw/tunnel"}</p>
-                  <p className={textMutedClassName}>回调地址：{workspaceConfig.tunnelAddress || previewTunnelAddress}</p>
+                  <p className={textMutedClassName}>通道回调地址：{workspaceConfig.tunnelAddress || previewTunnelAddress}</p>
                   <div className="flex gap-2">
                     <button type="button" className={buttonClassName} onClick={() => void saveTunnelConfig()}>
                       保存并生成命令
