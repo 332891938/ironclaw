@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 
 type MainTab = "workspace" | "employees" | "console";
-type WorkspaceSubtab = "models" | "channels" | "tools";
+type WorkspaceSubtab = "models" | "channels" | "tools" | "logs";
 
 type IronclawRuntimeInfo = {
   configuredPath: string | null;
@@ -26,6 +26,38 @@ type GatewayInfo = {
   token: string | null;
 };
 
+type IronclawLogs = {
+  content: string;
+};
+
+type LaunchEnvConfig = {
+  llmBackend: string | null;
+  llmBaseUrl: string | null;
+  llmModel: string | null;
+  llmApiKey: string | null;
+  openaiApiKey: string | null;
+  anthropicApiKey: string | null;
+  nearaiApiKey: string | null;
+  ollamaBaseUrl: string | null;
+  feishuAppId: string | null;
+  feishuAppSecret: string | null;
+  feishuVerificationToken: string | null;
+  telegramBotToken: string | null;
+  telegramWebhookSecret: string | null;
+  slackBotToken: string | null;
+  slackSigningSecret: string | null;
+  discordBotToken: string | null;
+  discordPublicKey: string | null;
+  whatsappAccessToken: string | null;
+  whatsappVerifyToken: string | null;
+};
+
+type ChannelSaveResult = {
+  channelType: string;
+  installedFiles: string[];
+  message: string;
+};
+
 type TauriInternals = {
   invoke?: (cmd: string, args?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
 };
@@ -37,11 +69,10 @@ type WorkspaceConfig = {
   modelBaseUrl: string;
   modelApiKey: string;
   modelId: string;
-  modelDefaultRef: string;
   channelType: string;
-  channelSourceUrl: string;
   channelAppIdOrToken: string;
   channelAppSecret: string;
+  channelVerificationToken: string;
   toolName: string;
   toolInstallSource: string;
   toolCommand: string;
@@ -57,11 +88,10 @@ const EMPTY_CONFIG: WorkspaceConfig = {
   modelBaseUrl: "",
   modelApiKey: "",
   modelId: "",
-  modelDefaultRef: "",
   channelType: "Feishu",
-  channelSourceUrl: "",
   channelAppIdOrToken: "",
   channelAppSecret: "",
+  channelVerificationToken: "",
   toolName: "",
   toolInstallSource: "",
   toolCommand: "",
@@ -101,6 +131,117 @@ function readStoredConfig() {
   }
 }
 
+function protocolToBackend(protocol: string) {
+  if (protocol === "anthropic-messages") {
+    return "anthropic";
+  }
+  return "openai_compatible";
+}
+
+function backendToProtocol(backend: string | null | undefined) {
+  if (backend === "anthropic") {
+    return "anthropic-messages";
+  }
+  return "openai-completions";
+}
+
+function resolveChannelFormFromLaunchConfig(launchConfig: LaunchEnvConfig, channelType: string) {
+  if (channelType === "Telegram") {
+    return {
+      appIdOrToken: launchConfig.telegramBotToken ?? "",
+      appSecret: "",
+      verificationToken: launchConfig.telegramWebhookSecret ?? "",
+    };
+  }
+  if (channelType === "Slack") {
+    return {
+      appIdOrToken: launchConfig.slackBotToken ?? "",
+      appSecret: launchConfig.slackSigningSecret ?? "",
+      verificationToken: "",
+    };
+  }
+  if (channelType === "Discord") {
+    return {
+      appIdOrToken: launchConfig.discordBotToken ?? "",
+      appSecret: launchConfig.discordPublicKey ?? "",
+      verificationToken: "",
+    };
+  }
+  if (channelType === "WhatsApp") {
+    return {
+      appIdOrToken: launchConfig.whatsappAccessToken ?? "",
+      appSecret: "",
+      verificationToken: launchConfig.whatsappVerifyToken ?? "",
+    };
+  }
+  return {
+    appIdOrToken: launchConfig.feishuAppId ?? "",
+    appSecret: launchConfig.feishuAppSecret ?? "",
+    verificationToken: launchConfig.feishuVerificationToken ?? "",
+  };
+}
+
+function getChannelFieldMeta(channelType: string) {
+  if (channelType === "Telegram") {
+    return {
+      firstLabel: "Bot Token",
+      firstPlaceholder: "输入 TELEGRAM_BOT_TOKEN",
+      secondLabel: "预留字段",
+      secondPlaceholder: "Telegram 暂无第二必填项",
+      thirdLabel: "Webhook Secret",
+      thirdPlaceholder: "可选：TELEGRAM_WEBHOOK_SECRET",
+      secondDisabled: true,
+      thirdDisabled: false,
+    };
+  }
+  if (channelType === "Slack") {
+    return {
+      firstLabel: "Bot Token",
+      firstPlaceholder: "输入 SLACK_BOT_TOKEN",
+      secondLabel: "Signing Secret",
+      secondPlaceholder: "输入 SLACK_SIGNING_SECRET",
+      thirdLabel: "预留字段",
+      thirdPlaceholder: "Slack 暂无第三必填项",
+      secondDisabled: false,
+      thirdDisabled: true,
+    };
+  }
+  if (channelType === "Discord") {
+    return {
+      firstLabel: "Bot Token",
+      firstPlaceholder: "输入 DISCORD_BOT_TOKEN",
+      secondLabel: "Public Key",
+      secondPlaceholder: "输入 DISCORD_PUBLIC_KEY",
+      thirdLabel: "预留字段",
+      thirdPlaceholder: "Discord 暂无第三必填项",
+      secondDisabled: false,
+      thirdDisabled: true,
+    };
+  }
+  if (channelType === "WhatsApp") {
+    return {
+      firstLabel: "Access Token",
+      firstPlaceholder: "输入 WHATSAPP_ACCESS_TOKEN",
+      secondLabel: "预留字段",
+      secondPlaceholder: "WhatsApp 暂无第二必填项",
+      thirdLabel: "Verify Token",
+      thirdPlaceholder: "输入 WHATSAPP_VERIFY_TOKEN",
+      secondDisabled: true,
+      thirdDisabled: false,
+    };
+  }
+  return {
+    firstLabel: "App ID",
+    firstPlaceholder: "输入 FEISHU_APP_ID",
+    secondLabel: "App Secret",
+    secondPlaceholder: "输入 FEISHU_APP_SECRET",
+    thirdLabel: "Verification Token",
+    thirdPlaceholder: "输入 FEISHU_VERIFICATION_TOKEN",
+    secondDisabled: false,
+    thirdDisabled: false,
+  };
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<MainTab>("workspace");
   const [activeSubtab, setActiveSubtab] = useState<WorkspaceSubtab>("models");
@@ -112,6 +253,7 @@ function App() {
   const [runtimeResult, setRuntimeResult] = useState("检测中...");
   const [gatewayUrl, setGatewayUrl] = useState("http://127.0.0.1:3000/");
   const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig>(readStoredConfig);
+  const [logsContent, setLogsContent] = useState("");
 
   useEffect(() => {
     localStorage.setItem(WORKSPACE_CONFIG_STORAGE_KEY, JSON.stringify(workspaceConfig));
@@ -119,6 +261,64 @@ function App() {
 
   const updateConfig = (key: keyof WorkspaceConfig, value: string) => {
     setWorkspaceConfig((current) => ({ ...current, [key]: value }));
+  };
+
+  const loadLaunchEnvConfig = async () => {
+    try {
+      const launchConfig = await invokeTauri<LaunchEnvConfig>("get_launch_env_config");
+      setWorkspaceConfig((current) => ({
+        ...current,
+        modelProtocol: backendToProtocol(launchConfig.llmBackend),
+        modelBaseUrl: launchConfig.llmBaseUrl ?? current.modelBaseUrl,
+        modelApiKey: launchConfig.llmApiKey ?? current.modelApiKey,
+        modelId: launchConfig.llmModel ?? current.modelId,
+        channelAppIdOrToken: resolveChannelFormFromLaunchConfig(launchConfig, current.channelType).appIdOrToken,
+        channelAppSecret: resolveChannelFormFromLaunchConfig(launchConfig, current.channelType).appSecret,
+        channelVerificationToken: resolveChannelFormFromLaunchConfig(launchConfig, current.channelType).verificationToken,
+      }));
+    } catch {
+      setRuntimeResult("读取已保存模型环境变量失败");
+    }
+  };
+
+  const saveLaunchEnvConfig = async (showMessage: boolean) => {
+    const existing = await invokeTauri<LaunchEnvConfig>("get_launch_env_config");
+    const payload: LaunchEnvConfig = {
+      ...existing,
+      llmBackend: protocolToBackend(workspaceConfig.modelProtocol),
+      llmBaseUrl: workspaceConfig.modelBaseUrl || null,
+      llmModel: workspaceConfig.modelId || null,
+      llmApiKey: workspaceConfig.modelApiKey || null,
+      feishuAppId: workspaceConfig.channelType === "Feishu" ? workspaceConfig.channelAppIdOrToken || null : existing.feishuAppId,
+      feishuAppSecret: workspaceConfig.channelType === "Feishu" ? workspaceConfig.channelAppSecret || null : existing.feishuAppSecret,
+      feishuVerificationToken:
+        workspaceConfig.channelType === "Feishu" ? workspaceConfig.channelVerificationToken || null : existing.feishuVerificationToken,
+      telegramBotToken: workspaceConfig.channelType === "Telegram" ? workspaceConfig.channelAppIdOrToken || null : existing.telegramBotToken,
+      telegramWebhookSecret:
+        workspaceConfig.channelType === "Telegram" ? workspaceConfig.channelVerificationToken || null : existing.telegramWebhookSecret,
+      slackBotToken: workspaceConfig.channelType === "Slack" ? workspaceConfig.channelAppIdOrToken || null : existing.slackBotToken,
+      slackSigningSecret: workspaceConfig.channelType === "Slack" ? workspaceConfig.channelAppSecret || null : existing.slackSigningSecret,
+      discordBotToken: workspaceConfig.channelType === "Discord" ? workspaceConfig.channelAppIdOrToken || null : existing.discordBotToken,
+      discordPublicKey: workspaceConfig.channelType === "Discord" ? workspaceConfig.channelAppSecret || null : existing.discordPublicKey,
+      whatsappAccessToken:
+        workspaceConfig.channelType === "WhatsApp" ? workspaceConfig.channelAppIdOrToken || null : existing.whatsappAccessToken,
+      whatsappVerifyToken:
+        workspaceConfig.channelType === "WhatsApp" ? workspaceConfig.channelVerificationToken || null : existing.whatsappVerifyToken,
+    };
+    const saved = await invokeTauri<LaunchEnvConfig>("set_launch_env_config", { config: payload });
+    setWorkspaceConfig((current) => ({
+      ...current,
+      modelProtocol: backendToProtocol(saved.llmBackend),
+      modelBaseUrl: saved.llmBaseUrl ?? "",
+      modelApiKey: saved.llmApiKey ?? "",
+      modelId: saved.llmModel ?? "",
+      channelAppIdOrToken: resolveChannelFormFromLaunchConfig(saved, current.channelType).appIdOrToken,
+      channelAppSecret: resolveChannelFormFromLaunchConfig(saved, current.channelType).appSecret,
+      channelVerificationToken: resolveChannelFormFromLaunchConfig(saved, current.channelType).verificationToken,
+    }));
+    if (showMessage) {
+      setRuntimeResult("模型参数已写入环境变量配置，后续启动将自动注入");
+    }
   };
 
   const refreshGatewayInfo = async () => {
@@ -165,8 +365,9 @@ function App() {
   };
 
   const startIronclawRun = async () => {
-    setRuntimeResult("正在启动 ironclaw run...");
+    setRuntimeResult("正在写入模型环境变量并启动 ironclaw run...");
     try {
+      await saveLaunchEnvConfig(false);
       const status = await invokeTauri<IronclawRunStatus>("start_ironclaw_run");
       setRuntimeStatus(status);
       setRuntimeResult(status.message);
@@ -184,6 +385,49 @@ function App() {
       setRuntimeResult(status.message);
     } catch (error) {
       setRuntimeResult(`停止失败: ${String(error)}`);
+    }
+  };
+
+  const fetchIronclawLogs = async () => {
+    try {
+      const logs = await invokeTauri<IronclawLogs>("get_ironclaw_logs");
+      setLogsContent(logs.content);
+    } catch {
+      setLogsContent("日志读取失败");
+    }
+  };
+
+  const saveChannelConfig = async () => {
+    setRuntimeResult("正在保存通道配置并安装内置通道...");
+    try {
+      const result = await invokeTauri<ChannelSaveResult>("save_channel_config", {
+        payload: {
+          channelType: workspaceConfig.channelType,
+          appIdOrToken: workspaceConfig.channelAppIdOrToken || null,
+          appSecret: workspaceConfig.channelAppSecret || null,
+          verificationToken: workspaceConfig.channelVerificationToken || null,
+        },
+      });
+      setRuntimeResult(`${result.message}，已写入 ${result.installedFiles.length} 个文件`);
+      await loadLaunchEnvConfig();
+    } catch (error) {
+      setRuntimeResult(`保存通道失败: ${String(error)}`);
+    }
+  };
+
+  const saveModelAndRestart = async () => {
+    setRuntimeResult("正在保存模型配置并重启 ironclaw...");
+    try {
+      await saveLaunchEnvConfig(false);
+      const stopStatus = await invokeTauri<IronclawRunStatus>("stop_ironclaw_run");
+      setRuntimeStatus(stopStatus);
+      const startStatus = await invokeTauri<IronclawRunStatus>("start_ironclaw_run");
+      setRuntimeStatus(startStatus);
+      setRuntimeResult("模型配置已保存并重启 ironclaw");
+      await refreshGatewayInfo();
+      await fetchIronclawLogs();
+    } catch (error) {
+      setRuntimeResult(`保存并重启失败: ${String(error)}`);
     }
   };
 
@@ -206,7 +450,36 @@ function App() {
     void refreshGatewayInfo();
     void refreshIronclawRunStatus();
     void detectIronclawRuntime();
+    void loadLaunchEnvConfig();
+    void fetchIronclawLogs();
   }, []);
+
+  useEffect(() => {
+    const refreshChannelFields = async () => {
+      try {
+        const launchConfig = await invokeTauri<LaunchEnvConfig>("get_launch_env_config");
+        const resolved = resolveChannelFormFromLaunchConfig(launchConfig, workspaceConfig.channelType);
+        setWorkspaceConfig((current) => ({
+          ...current,
+          channelAppIdOrToken: resolved.appIdOrToken,
+          channelAppSecret: resolved.appSecret,
+          channelVerificationToken: resolved.verificationToken,
+        }));
+      } catch {}
+    };
+    void refreshChannelFields();
+  }, [workspaceConfig.channelType]);
+
+  useEffect(() => {
+    if (activeSubtab !== "logs") {
+      return;
+    }
+    void fetchIronclawLogs();
+    const timer = window.setInterval(() => {
+      void fetchIronclawLogs();
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [activeSubtab]);
 
   useEffect(() => {
     if (activeTab === "console") {
@@ -238,6 +511,7 @@ function App() {
     "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 hover:bg-slate-50";
   const cardClassName = "rounded-xl border border-slate-200 bg-white p-4";
   const labelClassName = "flex flex-col gap-1.5 text-sm text-slate-700";
+  const channelFieldMeta = getChannelFieldMeta(workspaceConfig.channelType);
 
   return (
     <main className="min-h-screen bg-slate-100 p-5 text-slate-900">
@@ -310,11 +584,24 @@ function App() {
               <button type="button" className={subtabClassName(activeSubtab === "tools")} onClick={() => setActiveSubtab("tools")}>
                 工具
               </button>
+              <button type="button" className={subtabClassName(activeSubtab === "logs")} onClick={() => setActiveSubtab("logs")}>
+                日志
+              </button>
             </div>
 
             {activeSubtab === "models" && (
               <article className={cardClassName}>
-                <h2 className="mb-2 text-lg font-semibold">模型配置</h2>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold">模型配置</h2>
+                  <div className="flex gap-2">
+                    <button type="button" className={buttonClassName} onClick={() => void saveLaunchEnvConfig(true)}>
+                      保存
+                    </button>
+                    <button type="button" className={buttonClassName} onClick={() => void saveModelAndRestart()}>
+                      保存并重启
+                    </button>
+                  </div>
+                </div>
                 <form className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <label className={labelClassName}>
                     协议类型
@@ -364,22 +651,18 @@ function App() {
                       onChange={(event) => updateConfig("modelId", event.target.value)}
                     />
                   </label>
-                  <label className={labelClassName}>
-                    默认模型引用
-                    <input
-                      className={inputClassName}
-                      placeholder="自动生成：provider/model"
-                      value={workspaceConfig.modelDefaultRef}
-                      onChange={(event) => updateConfig("modelDefaultRef", event.target.value)}
-                    />
-                  </label>
                 </form>
               </article>
             )}
 
             {activeSubtab === "channels" && (
               <article className={cardClassName}>
-                <h2 className="mb-2 text-lg font-semibold">通道管理</h2>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold">通道管理</h2>
+                  <button type="button" className={buttonClassName} onClick={() => void saveChannelConfig()}>
+                    保存通道
+                  </button>
+                </div>
                 <form className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <label className={labelClassName}>
                     通道类型
@@ -391,34 +674,38 @@ function App() {
                       <option>Feishu</option>
                       <option>Telegram</option>
                       <option>Slack</option>
+                      <option>Discord</option>
+                      <option>WhatsApp</option>
                     </select>
                   </label>
                   <label className={labelClassName}>
-                    通道来源 URL
+                    {channelFieldMeta.firstLabel}
                     <input
                       className={inputClassName}
-                      placeholder="WASM/registry 地址"
-                      value={workspaceConfig.channelSourceUrl}
-                      onChange={(event) => updateConfig("channelSourceUrl", event.target.value)}
-                    />
-                  </label>
-                  <label className={labelClassName}>
-                    App ID / Token
-                    <input
-                      className={inputClassName}
-                      placeholder="输入通道鉴权字段"
+                      placeholder={channelFieldMeta.firstPlaceholder}
                       value={workspaceConfig.channelAppIdOrToken}
                       onChange={(event) => updateConfig("channelAppIdOrToken", event.target.value)}
                     />
                   </label>
                   <label className={labelClassName}>
-                    App Secret
+                    {channelFieldMeta.secondLabel}
                     <input
                       type="password"
                       className={inputClassName}
-                      placeholder="输入通道密钥"
+                      placeholder={channelFieldMeta.secondPlaceholder}
                       value={workspaceConfig.channelAppSecret}
+                      disabled={Boolean(channelFieldMeta.secondDisabled)}
                       onChange={(event) => updateConfig("channelAppSecret", event.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    {channelFieldMeta.thirdLabel}
+                    <input
+                      className={inputClassName}
+                      placeholder={channelFieldMeta.thirdPlaceholder}
+                      value={workspaceConfig.channelVerificationToken}
+                      disabled={Boolean(channelFieldMeta.thirdDisabled)}
+                      onChange={(event) => updateConfig("channelVerificationToken", event.target.value)}
                     />
                   </label>
                 </form>
@@ -466,6 +753,20 @@ function App() {
                     />
                   </label>
                 </form>
+              </article>
+            )}
+
+            {activeSubtab === "logs" && (
+              <article className={cardClassName}>
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <h2 className="text-lg font-semibold">Ironclaw 日志</h2>
+                  <button type="button" className={buttonClassName} onClick={() => void fetchIronclawLogs()}>
+                    刷新
+                  </button>
+                </div>
+                <pre className="max-h-[480px] overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 text-xs text-slate-100">
+                  {logsContent || "暂无日志"}
+                </pre>
               </article>
             )}
           </section>

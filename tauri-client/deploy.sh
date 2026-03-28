@@ -10,6 +10,18 @@ WINDOWS_CLIENT_BUNDLE_DIR="${WINDOWS_CLIENT_BUNDLE_DIR:-$ROOT_DIR/src-tauri/targ
 CLIENT_REMOTE_DIR="${CLIENT_REMOTE_DIR:-$REMOTE_DIR/client}"
 BUILD_CLIENT="${BUILD_CLIENT:-1}"
 
+for arg in "$@"; do
+  case "$arg" in
+    --frontend-only|--web-only)
+      BUILD_CLIENT=0
+      ;;
+    *)
+      echo "unknown argument: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+
 cd "$ROOT_DIR"
 npm run build
 if [ "$BUILD_CLIENT" = "1" ]; then

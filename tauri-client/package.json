@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:ironclaw-bin": "bash ./scripts/build-bundled-ironclaw.sh",
+    "build:channels": "bash ./scripts/build-bundled-channels.sh",
+    "build:tauri-assets": "npm run build && npm run build:ironclaw-bin && npm run build:channels",
     "preview": "vite preview",
     "tauri": "tauri"
   },
