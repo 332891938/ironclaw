@@ -120,6 +120,29 @@ struct SkillSaveResult {
     message: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TunnelSavePayload {
+    username: String,
+    password: String,
+    node_id: Option<String>,
+    channel_type: String,
+    verification_token: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TunnelSaveResult {
+    username: String,
+    node_id: String,
+    channel_slug: String,
+    command: String,
+    workdir: String,
+    config_path: String,
+    binary_path: String,
+    tunnel_url: String,
+}
+
 const POSTMESSAGE_ONLY_INVOKE_SYSTEM: &str = r#"
 ;(function () {
   const __TAURI_INVOKE_KEY__ = __INVOKE_KEY__
@@ -202,6 +225,12 @@ fn run_version_command_with_path(path: &Path) -> Option<String> {
 fn bundled_ironclaw_path(app: &tauri::AppHandle) -> Option<PathBuf> {
     let mut path = app.path().resource_dir().ok()?;
     path.push("bin");
+    #[cfg(target_os = "linux")]
+    path.push("linux-amd64");
+    #[cfg(target_os = "macos")]
+    path.push("macos-arm64");
+    #[cfg(target_os = "windows")]
+    path.push("windows-amd64");
     if cfg!(target_os = "windows") {
         path.push("ironclaw.exe");
     } else {
@@ -467,6 +496,130 @@ fn channel_slug(channel_type: &str) -> Option<&'static str> {
         "whatsapp" => Some("whatsapp"),
         _ => None,
     }
+}
+
+fn tunnel_channel_slug(channel_type: &str) -> &'static str {
+    match channel_type.to_ascii_lowercase().as_str() {
+        "telegram" => "telegram",
+        "slack" => "slack",
+        "discord" => "discord",
+        "whatsapp" => "whatsapp",
+        _ => "feishu",
+    }
+}
+
+fn tunnel_binary_name() -> &'static str {
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        "tunnel-client-darwin-arm64"
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        "tunnel-client-darwin-amd64"
+    }
+    #[cfg(target_os = "linux")]
+    {
+        "tunnel-client-linux-amd64"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "tunnel-client-windows-amd64.exe"
+    }
+}
+
+fn bundled_tunnel_resource_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Ok(mut path) = app.path().resource_dir() {
+        path.push("tunnel");
+        dirs.push(path);
+    }
+    let mut dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    dev_path.push("resources");
+    dev_path.push("tunnel");
+    if !dirs.iter().any(|p| p == &dev_path) {
+        dirs.push(dev_path);
+    }
+    dirs
+}
+
+fn tunnel_runtime_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let mut path = app
+        .path()
+        .home_dir()
+        .map_err(|e| format!("读取用户目录失败: {e}"))?;
+    path.push(".ironclaw");
+    path.push("tunnel");
+    Ok(path)
+}
+
+fn generate_tunnel_node_id() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = u128::from(std::process::id());
+    let mix = nanos ^ (pid << 64) ^ (nanos.rotate_left(17));
+    format!("{:032x}{:016x}", mix, nanos & 0xffff_ffff_ffff_ffff)
+}
+
+fn update_workbot_yaml_field(content: &str, key: &str, value: &str) -> String {
+    let mut updated = Vec::new();
+    let mut replaced = false;
+    let prefix = format!("  {key}:");
+    for line in content.lines() {
+        if line.trim_start().starts_with(&prefix) {
+            updated.push(format!("  {key}: \"{value}\""));
+            replaced = true;
+        } else {
+            updated.push(line.to_string());
+        }
+    }
+    if !replaced {
+        updated.push(format!("  {key}: \"{value}\""));
+    }
+    updated.join("\n")
+}
+
+fn ensure_tunnel_runtime_assets(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let runtime_dir = tunnel_runtime_dir(app)?;
+    fs::create_dir_all(&runtime_dir).map_err(|e| format!("创建 tunnel 目录失败: {e}"))?;
+    let binary_name = tunnel_binary_name();
+    let config_name = "workbot.yaml";
+    let mut found_binary: Option<PathBuf> = None;
+    let mut found_config: Option<PathBuf> = None;
+    for resource_dir in bundled_tunnel_resource_dirs(app) {
+        if found_binary.is_none() {
+            let candidate = resource_dir.join(binary_name);
+            if candidate.is_file() {
+                found_binary = Some(candidate);
+            }
+        }
+        if found_config.is_none() {
+            let candidate = resource_dir.join(config_name);
+            if candidate.is_file() {
+                found_config = Some(candidate);
+            }
+        }
+    }
+    let source_binary = found_binary.ok_or_else(|| format!("未找到内置 tunnel 客户端: {binary_name}"))?;
+    let source_config = found_config.ok_or_else(|| "未找到内置 tunnel 配置: workbot.yaml".to_string())?;
+    let target_binary = runtime_dir.join(binary_name);
+    let target_config = runtime_dir.join(config_name);
+    fs::copy(&source_binary, &target_binary).map_err(|e| format!("复制 tunnel 客户端失败: {e}"))?;
+    fs::copy(&source_config, &target_config).map_err(|e| format!("复制 workbot.yaml 失败: {e}"))?;
+    if cfg!(not(target_os = "windows")) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&target_binary)
+                .map_err(|e| format!("读取 tunnel 客户端权限失败: {e}"))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&target_binary, perms)
+                .map_err(|e| format!("设置 tunnel 客户端权限失败: {e}"))?;
+        }
+    }
+    Ok((target_binary, target_config))
 }
 
 fn bundled_channels_resource_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
@@ -1399,6 +1552,63 @@ fn save_skill_config(app: tauri::AppHandle, payload: SkillSavePayload) -> Result
 }
 
 #[tauri::command]
+fn save_tunnel_config(
+    app: tauri::AppHandle,
+    payload: TunnelSavePayload,
+) -> Result<TunnelSaveResult, String> {
+    let username = payload.username.trim();
+    if username.is_empty() {
+        return Err("用户名不能为空".to_string());
+    }
+    let password = payload.password.trim();
+    if password.is_empty() {
+        return Err("密码不能为空".to_string());
+    }
+    let node_id = match payload.node_id.as_deref().map(str::trim) {
+        Some(value) if value.len() >= 32 => value.to_string(),
+        _ => generate_tunnel_node_id(),
+    };
+    let verification_token = payload.verification_token.trim();
+    if verification_token.is_empty() {
+        return Err("Verification Token 不能为空".to_string());
+    }
+    let channel_slug = tunnel_channel_slug(&payload.channel_type).to_string();
+    let (binary_path, config_path) = ensure_tunnel_runtime_assets(&app)?;
+    let yaml_raw = fs::read_to_string(&config_path).map_err(|e| format!("读取 workbot.yaml 失败: {e}"))?;
+    let yaml_with_user = update_workbot_yaml_field(&yaml_raw, "username", username);
+    let yaml_with_password = update_workbot_yaml_field(&yaml_with_user, "password", password);
+    let yaml_updated = update_workbot_yaml_field(&yaml_with_password, "node_id", &node_id);
+    fs::write(&config_path, yaml_updated).map_err(|e| format!("写入 workbot.yaml 失败: {e}"))?;
+    let binary_name = binary_path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .ok_or_else(|| "读取 tunnel 客户端名称失败".to_string())?
+        .to_string();
+    let command = if cfg!(target_os = "windows") {
+        format!("{binary_name} -config .\\workbot.yaml")
+    } else {
+        format!("{binary_name} -config ./workbot.yaml")
+    };
+    let tunnel_url = format!(
+        "https://workbot.axiayun.com/proxy/{username}/{node_id}/webhook/{channel_slug}?secret={verification_token}"
+    );
+    Ok(TunnelSaveResult {
+        username: username.to_string(),
+        node_id,
+        channel_slug,
+        command,
+        workdir: binary_path
+            .parent()
+            .unwrap_or(Path::new("."))
+            .display()
+            .to_string(),
+        config_path: config_path.display().to_string(),
+        binary_path: binary_path.display().to_string(),
+        tunnel_url,
+    })
+}
+
+#[tauri::command]
 fn get_ironclaw_logs(state: tauri::State<AppState>) -> Result<IronclawLogs, String> {
     let guard = state
         .logs_buffer
@@ -1629,6 +1839,7 @@ pub fn run() {
             save_tool_config,
             get_bundled_tools,
             save_skill_config,
+            save_tunnel_config,
             get_ironclaw_logs,
             start_ironclaw_run,
             stop_ironclaw_run,

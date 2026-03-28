@@ -62,6 +62,17 @@ type SkillSaveResult = {
   message: string;
 };
 
+type TunnelSaveResult = {
+  username: string;
+  nodeId: string;
+  channelSlug: string;
+  command: string;
+  workdir: string;
+  configPath: string;
+  binaryPath: string;
+  tunnelUrl: string;
+};
+
 type TauriInternals = {
   invoke?: (cmd: string, args?: Record<string, unknown>, options?: unknown) => Promise<unknown>;
 };
@@ -77,6 +88,12 @@ type WorkspaceConfig = {
   channelAppIdOrToken: string;
   channelAppSecret: string;
   channelVerificationToken: string;
+  tunnelUsername: string;
+  tunnelPassword: string;
+  tunnelNodeId: string;
+  tunnelStartCommand: string;
+  tunnelWorkdir: string;
+  tunnelAddress: string;
   toolName: string;
   toolInstallSource: string;
   skillInstallSource: string;
@@ -96,6 +113,12 @@ const EMPTY_CONFIG: WorkspaceConfig = {
   channelAppIdOrToken: "",
   channelAppSecret: "",
   channelVerificationToken: "",
+  tunnelUsername: "xm",
+  tunnelPassword: "123123",
+  tunnelNodeId: "",
+  tunnelStartCommand: "",
+  tunnelWorkdir: "",
+  tunnelAddress: "",
   toolName: "",
   toolInstallSource: "",
   skillInstallSource: "",
@@ -154,6 +177,30 @@ function backendToProtocol(backend: string | null | undefined) {
     return "anthropic-messages";
   }
   return "openai-completions";
+}
+
+function channelTypeToSlug(channelType: string) {
+  if (channelType === "Telegram") {
+    return "telegram";
+  }
+  if (channelType === "Slack") {
+    return "slack";
+  }
+  if (channelType === "Discord") {
+    return "discord";
+  }
+  if (channelType === "WhatsApp") {
+    return "whatsapp";
+  }
+  return "feishu";
+}
+
+function generateNodeId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID().replace(/-/g, "");
+  }
+  const text = `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}${Math.random().toString(16).slice(2)}`;
+  return text.padEnd(32, "0").slice(0, 32);
 }
 
 function resolveChannelFormFromLaunchConfig(launchConfig: LaunchEnvConfig, channelType: string) {
@@ -429,6 +476,48 @@ function App() {
     }
   };
 
+  const saveTunnelConfig = async () => {
+    const username = workspaceConfig.tunnelUsername.trim();
+    const password = workspaceConfig.tunnelPassword.trim();
+    const verificationToken = workspaceConfig.channelVerificationToken.trim();
+    if (!username) {
+      setRuntimeResult("请先填写通道用户名");
+      return;
+    }
+    if (!password) {
+      setRuntimeResult("请先填写通道密码");
+      return;
+    }
+    if (!verificationToken) {
+      setRuntimeResult("请先填写通道 Verification Token");
+      return;
+    }
+    const nodeId = workspaceConfig.tunnelNodeId.trim().length >= 32 ? workspaceConfig.tunnelNodeId.trim() : generateNodeId();
+    setRuntimeResult("正在写入 workbot.yaml 并生成通道命令...");
+    try {
+      const result = await invokeTauri<TunnelSaveResult>("save_tunnel_config", {
+        payload: {
+          username,
+          password,
+          nodeId,
+          channelType: workspaceConfig.channelType,
+          verificationToken,
+        },
+      });
+      setWorkspaceConfig((current) => ({
+        ...current,
+        tunnelUsername: result.username,
+        tunnelNodeId: result.nodeId,
+        tunnelStartCommand: result.command,
+        tunnelWorkdir: result.workdir,
+        tunnelAddress: result.tunnelUrl,
+      }));
+      setRuntimeResult(`通道配置已保存，启动命令：cd ${result.workdir} && ${result.command}`);
+    } catch (error) {
+      setRuntimeResult(`保存通道启动配置失败: ${String(error)}`);
+    }
+  };
+
   const saveToolConfig = async () => {
     if (!workspaceConfig.toolName.trim()) {
       setRuntimeResult("请选择或填写工具名称");
@@ -605,6 +694,8 @@ function App() {
     : "inline-block h-5 w-5 translate-x-1 rounded-full bg-white transition-transform";
   const switchLabelClassName = isDark ? "text-sm text-slate-300" : "text-sm text-slate-700";
   const channelFieldMeta = getChannelFieldMeta(workspaceConfig.channelType);
+  const previewTunnelNodeId = workspaceConfig.tunnelNodeId.trim().length >= 32 ? workspaceConfig.tunnelNodeId.trim() : "pc";
+  const previewTunnelAddress = `https://workbot.axiayun.com/proxy/${workspaceConfig.tunnelUsername.trim() || "xm"}/${previewTunnelNodeId}/webhook/${channelTypeToSlug(workspaceConfig.channelType)}?secret=${workspaceConfig.channelVerificationToken.trim() || "<VerificationToken>"}`;
 
   return (
     <main className={pageClassName}>
@@ -659,6 +750,9 @@ function App() {
                   </button>
                   <button type="button" className={buttonClassName} onClick={() => void openConsoleLink()}>
                     打开控制台
+                  </button>
+                  <button type="button" className={buttonClassName} onClick={() => void saveTunnelConfig()}>
+                    启动通道命令
                   </button>
                 </div>
               </div>
@@ -812,6 +906,62 @@ function App() {
                     />
                   </label>
                 </form>
+                <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <label className={labelClassName}>
+                    Tunnel 用户名
+                    <input
+                      className={inputClassName}
+                      placeholder="例如：xm"
+                      value={workspaceConfig.tunnelUsername}
+                      onChange={(event) => updateConfig("tunnelUsername", event.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    Tunnel 密码
+                    <input
+                      type="password"
+                      className={inputClassName}
+                      placeholder="输入 workbot 密码"
+                      value={workspaceConfig.tunnelPassword}
+                      onChange={(event) => updateConfig("tunnelPassword", event.target.value)}
+                    />
+                  </label>
+                  <label className={labelClassName}>
+                    node_id（至少 32 位）
+                    <div className="flex gap-2">
+                      <input
+                        className={inputClassName}
+                        placeholder="留空将自动随机生成"
+                        value={workspaceConfig.tunnelNodeId}
+                        onChange={(event) => updateConfig("tunnelNodeId", event.target.value)}
+                      />
+                      <button
+                        type="button"
+                        className={buttonClassName}
+                        onClick={() => updateConfig("tunnelNodeId", generateNodeId())}
+                      >
+                        随机生成
+                      </button>
+                    </div>
+                  </label>
+                  <label className={labelClassName}>
+                    启动命令
+                    <input
+                      className={inputClassName}
+                      readOnly
+                      value={workspaceConfig.tunnelStartCommand || "tunnel-client-darwin-arm64 -config ./workbot.yaml"}
+                    />
+                  </label>
+                </div>
+                <div className="mt-3 flex flex-col gap-2">
+                  <p className={textMutedClassName}>运行目录：{workspaceConfig.tunnelWorkdir || "~/.ironclaw/tunnel"}</p>
+                  <p className={textMutedClassName}>回调地址：{workspaceConfig.tunnelAddress || previewTunnelAddress}</p>
+                  <div className="flex gap-2">
+                    <button type="button" className={buttonClassName} onClick={() => void saveTunnelConfig()}>
+                      保存并生成命令
+                    </button>
+                  </div>
+                </div>
               </article>
             )}
 

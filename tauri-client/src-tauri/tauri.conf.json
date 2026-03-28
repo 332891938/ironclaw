@@ -34,7 +34,8 @@
       "resources/bin",
       "resources/channels",
       "resources/tools",
-      "resources/skills"
+      "resources/skills",
+      "resources/tunnel"
     ],
     "icon": [
       "icons/32x32.png",
