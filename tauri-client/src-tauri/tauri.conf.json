@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-client",
+  "productName": "ironclaw-client",
   "version": "0.1.0",
   "identifier": "com.xumin.tauri-client",
   "build": {
@@ -14,10 +14,10 @@
     "windows": [
       {
         "label": "main",
-        "title": "tauri-client",
+        "title": "ironclaw-client",
         "url": "https://ironclaw.axiayun.com/",
         "width": 1440,
-        "height": 900,
+        "height": 1000,
         "minWidth": 1200,
         "minHeight": 760
       }

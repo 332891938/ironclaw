@@ -4,15 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 
 type MainTab = "workspace" | "employees";
 type WorkspaceSubtab = "models" | "channels" | "tools" | "skills" | "logs";
-
-type IronclawRuntimeInfo = {
-  configuredPath: string | null;
-  discoveredPath: string | null;
-  bundledCandidatePath: string | null;
-  version: string | null;
-  available: boolean;
-  message: string;
-};
+type UiMode = "light" | "dark";
 
 type IronclawRunStatus = {
   running: boolean;
@@ -91,6 +83,7 @@ type WorkspaceConfig = {
 };
 
 const WORKSPACE_CONFIG_STORAGE_KEY = "ironclaw.workspace.config.v1";
+const UI_MODE_STORAGE_KEY = "ironclaw.ui.mode.v1";
 
 const EMPTY_CONFIG: WorkspaceConfig = {
   gatewayToken: "",
@@ -139,6 +132,14 @@ function readStoredConfig() {
   } catch {
     return EMPTY_CONFIG;
   }
+}
+
+function readStoredUiMode(): UiMode {
+  const raw = localStorage.getItem(UI_MODE_STORAGE_KEY);
+  if (raw === "light") {
+    return "light";
+  }
+  return "dark";
 }
 
 function protocolToBackend(protocol: string) {
@@ -260,15 +261,21 @@ function App() {
     pid: null,
     message: "",
   });
-  const [runtimeResult, setRuntimeResult] = useState("检测中...");
+  const [runtimeResult, setRuntimeResult] = useState("已内置 ironclaw 运行时");
   const [gatewayUrl, setGatewayUrl] = useState("http://127.0.0.1:3000/");
   const [workspaceConfig, setWorkspaceConfig] = useState<WorkspaceConfig>(readStoredConfig);
+  const [uiMode, setUiMode] = useState<UiMode>(readStoredUiMode);
   const [bundledTools, setBundledTools] = useState<string[]>([]);
   const [logsContent, setLogsContent] = useState("");
+  const isDark = uiMode === "dark";
 
   useEffect(() => {
     localStorage.setItem(WORKSPACE_CONFIG_STORAGE_KEY, JSON.stringify(workspaceConfig));
   }, [workspaceConfig]);
+
+  useEffect(() => {
+    localStorage.setItem(UI_MODE_STORAGE_KEY, uiMode);
+  }, [uiMode]);
 
   const updateConfig = (key: keyof WorkspaceConfig, value: string) => {
     setWorkspaceConfig((current) => ({ ...current, [key]: value }));
@@ -351,25 +358,21 @@ function App() {
     }
   };
 
-  const detectIronclawRuntime = async () => {
-    setRuntimeResult("检测中...");
-    try {
-      const info = await invokeTauri<IronclawRuntimeInfo>("detect_ironclaw_runtime");
-      setRuntimeResult(info.available ? "已安装" : "未安装");
-    } catch (error) {
-      setRuntimeResult(`检测失败: ${String(error)}`);
-    }
-  };
-
   const applyGatewayToken = async () => {
-    setRuntimeResult("正在应用 GATEWAY_AUTH_TOKEN...");
+    setRuntimeResult("正在应用 GATEWAY_AUTH_TOKEN 并重启服务...");
     try {
       const info = await invokeTauri<GatewayInfo>("set_gateway_auth_token", {
         token: workspaceConfig.gatewayToken,
       });
       setGatewayUrl(info.url);
-      setRuntimeResult(info.hasToken ? "Token 已应用" : "已清空自定义 Token，使用默认配置");
       setWorkspaceConfig((current) => ({ ...current, gatewayToken: info.token ?? "" }));
+      const stopStatus = await invokeTauri<IronclawRunStatus>("stop_ironclaw_run");
+      setRuntimeStatus(stopStatus);
+      const startStatus = await invokeTauri<IronclawRunStatus>("start_ironclaw_run");
+      setRuntimeStatus(startStatus);
+      setRuntimeResult(info.hasToken ? "Token 已应用并重启服务" : "已清空自定义 Token，并重启服务");
+      await refreshGatewayInfo();
+      await fetchIronclawLogs();
     } catch (error) {
       setRuntimeResult(`应用 Token 失败: ${String(error)}`);
     }
@@ -506,7 +509,6 @@ function App() {
   useEffect(() => {
     void refreshGatewayInfo();
     void refreshIronclawRunStatus();
-    void detectIronclawRuntime();
     void loadLaunchEnvConfig();
     void loadBundledTools();
     void fetchIronclawLogs();
@@ -551,38 +553,81 @@ function App() {
   const statusPillClassName = useMemo(
     () =>
       runtimeStatus.running
-        ? "rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700"
-        : "rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600",
-    [runtimeStatus.running],
+        ? isDark
+          ? "rounded-full border border-emerald-800 bg-emerald-950 px-2 py-0.5 text-xs text-emerald-300"
+          : "rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700"
+        : isDark
+          ? "rounded-full border border-slate-700 bg-slate-900 px-2 py-0.5 text-xs text-slate-300"
+          : "rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600",
+    [runtimeStatus.running, isDark],
   );
 
   const tabClassName = (selected: boolean) =>
     selected
-      ? "rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm text-blue-700"
-      : "rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm text-slate-700";
+      ? isDark
+        ? "rounded-lg border border-blue-700 bg-blue-950 px-3 py-1.5 text-sm text-blue-300"
+        : "rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm text-blue-700"
+      : isDark
+        ? "rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm text-slate-300"
+        : "rounded-lg border border-transparent bg-transparent px-3 py-1.5 text-sm text-slate-700";
 
   const subtabClassName = (selected: boolean) =>
     selected
-      ? "rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm text-blue-700"
-      : "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700";
+      ? isDark
+        ? "rounded-lg border border-blue-700 bg-blue-950 px-3 py-1.5 text-sm text-blue-300"
+        : "rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5 text-sm text-blue-700"
+      : isDark
+        ? "rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-slate-300"
+        : "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700";
 
-  const inputClassName =
-    "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-300";
-  const buttonClassName =
-    "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 hover:bg-slate-50";
-  const cardClassName = "rounded-xl border border-slate-200 bg-white p-4";
-  const labelClassName = "flex flex-col gap-1.5 text-sm text-slate-700";
+  const inputClassName = isDark
+    ? "w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-blue-500"
+    : "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none focus:border-blue-300";
+  const buttonClassName = isDark
+    ? "rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 hover:bg-slate-800"
+    : "rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 hover:bg-slate-50";
+  const cardClassName = isDark ? "rounded-xl border border-slate-700 bg-slate-900 p-4" : "rounded-xl border border-slate-200 bg-white p-4";
+  const labelClassName = isDark ? "flex flex-col gap-1.5 text-sm text-slate-300" : "flex flex-col gap-1.5 text-sm text-slate-700";
+  const textMutedClassName = isDark ? "text-sm text-slate-400" : "text-sm text-slate-600";
+  const pageClassName = isDark ? "min-h-screen bg-slate-950 p-5 text-slate-100" : "min-h-screen bg-slate-100 p-5 text-slate-900";
+  const headerClassName = isDark
+    ? "flex items-center justify-between rounded-xl border border-slate-700 bg-slate-900 px-4 py-3"
+    : "flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3";
+  const versionClassName = isDark ? "text-xs text-slate-400" : "text-xs text-slate-500";
+  const logsClassName = isDark
+    ? "max-h-[480px] overflow-auto rounded-lg border border-slate-700 bg-slate-950 p-3 text-xs text-slate-100"
+    : "max-h-[480px] overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 text-xs text-slate-100";
+  const switchTrackClassName = isDark
+    ? "relative inline-flex h-6 w-11 items-center rounded-full bg-blue-600 transition-colors"
+    : "relative inline-flex h-6 w-11 items-center rounded-full bg-slate-300 transition-colors";
+  const switchThumbClassName = isDark
+    ? "inline-block h-5 w-5 translate-x-5 rounded-full bg-white transition-transform"
+    : "inline-block h-5 w-5 translate-x-1 rounded-full bg-white transition-transform";
+  const switchLabelClassName = isDark ? "text-sm text-slate-300" : "text-sm text-slate-700";
   const channelFieldMeta = getChannelFieldMeta(workspaceConfig.channelType);
 
   return (
-    <main className="min-h-screen bg-slate-100 p-5 text-slate-900">
+    <main className={pageClassName}>
       <div className="mx-auto flex max-w-7xl flex-col gap-3">
-        <header className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-3">
+        <header className={headerClassName}>
           <div className="flex items-baseline gap-2">
             <strong>IronClaw Desktop</strong>
-            <span className="text-xs text-slate-500">v0.1.0</span>
+            <span className={versionClassName}>v0.1.0</span>
           </div>
-          <nav className="flex gap-2">
+          <nav className="flex items-center gap-2">
+            <button
+              type="button"
+              className="inline-flex items-center gap-2 rounded-lg px-2 py-1"
+              onClick={() => setUiMode(isDark ? "light" : "dark")}
+              role="switch"
+              aria-checked={isDark}
+              aria-label="切换暗黑模式"
+            >
+              <span className={switchTrackClassName}>
+                <span className={switchThumbClassName} />
+              </span>
+              <span className={switchLabelClassName}>暗黑模式</span>
+            </button>
             <button type="button" className={tabClassName(activeTab === "workspace")} onClick={() => setActiveTab("workspace")}>
               工作台
             </button>
@@ -629,7 +674,7 @@ function App() {
                   应用 Token
                 </button>
               </div>
-              <p className="text-sm text-slate-600">{runtimeResult}</p>
+              <p className={textMutedClassName}>{runtimeResult}</p>
             </article>
 
             <div className="flex gap-2">
@@ -655,9 +700,6 @@ function App() {
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <h2 className="text-lg font-semibold">模型配置</h2>
                   <div className="flex gap-2">
-                    <button type="button" className={buttonClassName} onClick={() => void saveLaunchEnvConfig(true)}>
-                      保存
-                    </button>
                     <button type="button" className={buttonClassName} onClick={() => void saveModelAndRestart()}>
                       保存并重启
                     </button>
@@ -849,7 +891,7 @@ function App() {
                     刷新
                   </button>
                 </div>
-                <pre className="max-h-[480px] overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 text-xs text-slate-100">
+                <pre className={logsClassName}>
                   {logsContent || "暂无日志"}
                 </pre>
               </article>
@@ -861,7 +903,7 @@ function App() {
           <section className="flex flex-col gap-3">
             <h1 className="text-2xl font-semibold">数字员工</h1>
             <article className={cardClassName}>
-              <p className="text-sm text-slate-600">从远程目录搜索岗位并一键安装 skills / tools / MCP。</p>
+              <p className={textMutedClassName}>从远程目录搜索岗位并一键安装 skills / tools / MCP。</p>
             </article>
           </section>
         )}
