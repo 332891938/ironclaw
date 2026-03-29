@@ -111,6 +111,7 @@ struct ToolSaveResult {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SkillSavePayload {
+    skill_name: String,
     install_source: String,
 }
 
@@ -649,8 +650,12 @@ fn ensure_tunnel_runtime_assets(app: &tauri::AppHandle) -> Result<(PathBuf, Path
     let source_config = found_config.ok_or_else(|| "未找到内置 tunnel 配置: workbot.yaml".to_string())?;
     let target_binary = runtime_dir.join(binary_name);
     let target_config = runtime_dir.join(config_name);
-    fs::copy(&source_binary, &target_binary).map_err(|e| format!("复制 tunnel 客户端失败: {e}"))?;
-    fs::copy(&source_config, &target_config).map_err(|e| format!("复制 workbot.yaml 失败: {e}"))?;
+    if !target_binary.is_file() {
+        fs::copy(&source_binary, &target_binary).map_err(|e| format!("复制 tunnel 客户端失败: {e}"))?;
+    }
+    if !target_config.is_file() {
+        fs::copy(&source_config, &target_config).map_err(|e| format!("复制 workbot.yaml 失败: {e}"))?;
+    }
     if cfg!(not(target_os = "windows")) {
         #[cfg(unix)]
         {
@@ -664,6 +669,77 @@ fn ensure_tunnel_runtime_assets(app: &tauri::AppHandle) -> Result<(PathBuf, Path
         }
     }
     Ok((target_binary, target_config))
+}
+
+fn restart_tunnel_process(
+    state: &tauri::State<AppState>,
+    binary_path: &Path,
+    workdir_path: &Path,
+) -> Result<u32, String> {
+    let mut tunnel_guard = state
+        .tunnel_child
+        .lock()
+        .map_err(|_| "无法获取 tunnel 进程状态锁".to_string())?;
+    if let Some(existing) = tunnel_guard.as_mut() {
+        match existing.try_wait() {
+            Ok(Some(_)) => {
+                *tunnel_guard = None;
+            }
+            Ok(None) => {
+                let old_pid = existing.id();
+                existing
+                    .kill()
+                    .map_err(|e| format!("停止旧 tunnel 进程失败 (pid={old_pid}): {e}"))?;
+                let _ = existing.wait();
+                *tunnel_guard = None;
+            }
+            Err(e) => {
+                return Err(format!("检查旧 tunnel 进程状态失败: {e}"));
+            }
+        }
+    }
+
+    let mut tunnel_cmd = Command::new(binary_path);
+    tunnel_cmd
+        .arg("-config")
+        .arg("./workbot.yaml")
+        .current_dir(workdir_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let tunnel_child = tunnel_cmd
+        .spawn()
+        .map_err(|e| format!("启动 tunnel 客户端失败: {e}"))?;
+    let pid = tunnel_child.id();
+    *tunnel_guard = Some(tunnel_child);
+    Ok(pid)
+}
+
+fn ensure_tunnel_process_running(app: &tauri::AppHandle, state: &tauri::State<AppState>) -> Result<u32, String> {
+    let (binary_path, config_path) = ensure_tunnel_runtime_assets(app)?;
+    if !config_path.is_file() {
+        return Err("未找到 tunnel 配置文件，请先点击“保存并生成命令”".to_string());
+    }
+    let workdir_path = binary_path
+        .parent()
+        .ok_or_else(|| "读取 tunnel 工作目录失败".to_string())?;
+    restart_tunnel_process(state, &binary_path, workdir_path)
+}
+
+fn stop_tunnel_process(state: &tauri::State<AppState>) -> Result<Option<u32>, String> {
+    let mut tunnel_guard = state
+        .tunnel_child
+        .lock()
+        .map_err(|_| "无法获取 tunnel 进程状态锁".to_string())?;
+    let Some(mut child) = tunnel_guard.take() else {
+        return Ok(None);
+    };
+    let pid = child.id();
+    child
+        .kill()
+        .map_err(|e| format!("停止 tunnel 进程失败 (pid={pid}): {e}"))?;
+    let _ = child.wait();
+    Ok(Some(pid))
 }
 
 fn bundled_channels_resource_dirs(app: &tauri::AppHandle) -> Vec<PathBuf> {
@@ -1108,13 +1184,17 @@ fn derive_skill_slug_from_url(source_url: &str) -> Option<String> {
 fn install_skill_from_markdown_url(
     app: &tauri::AppHandle,
     source_url: &str,
+    preferred_slug: Option<&str>,
 ) -> Result<(String, Vec<String>), String> {
     let content = reqwest::blocking::get(source_url)
         .and_then(reqwest::blocking::Response::error_for_status)
         .map_err(|e| format!("下载技能失败: {e}"))?
         .text()
         .map_err(|e| format!("读取技能内容失败: {e}"))?;
-    let skill_slug = extract_skill_name_from_markdown(&content)
+    let skill_slug = preferred_slug
+        .map(sanitize_skill_slug)
+        .filter(|value| !value.is_empty())
+        .or_else(|| extract_skill_name_from_markdown(&content))
         .or_else(|| derive_skill_slug_from_url(source_url))
         .ok_or_else(|| "无法从技能内容或 URL 推断技能名称".to_string())?;
     let target_dir = ironclaw_installed_skills_dir(app)?.join(&skill_slug);
@@ -1130,6 +1210,7 @@ fn install_skill_from_markdown_url(
 fn install_skill_from_zip_url(
     app: &tauri::AppHandle,
     zip_url: &str,
+    preferred_slug: Option<&str>,
 ) -> Result<(String, Vec<String>), String> {
     let response = reqwest::blocking::get(zip_url)
         .and_then(reqwest::blocking::Response::error_for_status)
@@ -1169,7 +1250,10 @@ fn install_skill_from_zip_url(
         .ok_or_else(|| "zip 中未找到 SKILL.md".to_string())?;
 
     let skill_content = fs::read_to_string(&selected_skill_md).unwrap_or_default();
-    let skill_slug = extract_skill_name_from_markdown(&skill_content)
+    let skill_slug = preferred_slug
+        .map(sanitize_skill_slug)
+        .filter(|value| !value.is_empty())
+        .or_else(|| extract_skill_name_from_markdown(&skill_content))
         .or_else(|| {
             selected_skill_md
                 .parent()
@@ -1577,14 +1661,19 @@ fn get_bundled_tools(app: tauri::AppHandle) -> Result<Vec<String>, String> {
 
 #[tauri::command]
 fn save_skill_config(app: tauri::AppHandle, payload: SkillSavePayload) -> Result<SkillSaveResult, String> {
+    let skill_name = payload.skill_name.trim();
+    if skill_name.is_empty() {
+        return Err("技能名称不能为空".to_string());
+    }
     let source = payload.install_source.trim();
     if !is_http_source(source) {
         return Err("技能安装仅支持 URL".to_string());
     }
+    let preferred_slug = Some(skill_name);
     let (skill_slug, installed_files) = if is_http_zip_source(source) {
-        install_skill_from_zip_url(&app, source)?
+        install_skill_from_zip_url(&app, source, preferred_slug)?
     } else {
-        install_skill_from_markdown_url(&app, source)?
+        install_skill_from_markdown_url(&app, source, preferred_slug)?
     };
     let message = format!("技能已通过网络安装到 ~/.ironclaw/installed_skills: {skill_slug}");
 
@@ -1638,44 +1727,7 @@ fn save_tunnel_config(
         .parent()
         .ok_or_else(|| "读取 tunnel 工作目录失败".to_string())?
         .to_path_buf();
-    let tunnel_pid = {
-        let mut tunnel_guard = state
-            .tunnel_child
-            .lock()
-            .map_err(|_| "无法获取 tunnel 进程状态锁".to_string())?;
-        if let Some(existing) = tunnel_guard.as_mut() {
-            match existing.try_wait() {
-                Ok(Some(_)) => {
-                    *tunnel_guard = None;
-                }
-                Ok(None) => {
-                    let old_pid = existing.id();
-                    existing
-                        .kill()
-                        .map_err(|e| format!("停止旧 tunnel 进程失败 (pid={old_pid}): {e}"))?;
-                    let _ = existing.wait();
-                    *tunnel_guard = None;
-                }
-                Err(e) => {
-                    return Err(format!("检查旧 tunnel 进程状态失败: {e}"));
-                }
-            }
-        }
-        let mut tunnel_cmd = Command::new(&binary_path);
-        tunnel_cmd
-            .arg("-config")
-            .arg("./workbot.yaml")
-            .current_dir(&workdir_path)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let tunnel_child = tunnel_cmd
-            .spawn()
-            .map_err(|e| format!("启动 tunnel 客户端失败: {e}"))?;
-        let pid = tunnel_child.id();
-        *tunnel_guard = Some(tunnel_child);
-        pid
-    };
+    let tunnel_pid = restart_tunnel_process(&state, &binary_path, &workdir_path)?;
     let tunnel_url = format!(
         "https://workbot.axiayun.com/proxy/{username}/{node_id}/webhook/{channel_slug}?secret={verification_token}"
     );
@@ -1705,6 +1757,7 @@ fn get_ironclaw_logs(state: tauri::State<AppState>) -> Result<IronclawLogs, Stri
 
 #[tauri::command]
 fn start_ironclaw_run(app: tauri::AppHandle, state: tauri::State<AppState>) -> Result<IronclawRunStatus, String> {
+    let tunnel_pid = ensure_tunnel_process_running(&app, &state)?;
     let mut child_guard = state
         .ironclaw_child
         .lock()
@@ -1719,7 +1772,7 @@ fn start_ironclaw_run(app: tauri::AppHandle, state: tauri::State<AppState>) -> R
                 return Ok(IronclawRunStatus {
                     running: true,
                     pid: Some(child.id()),
-                    message: "ironclaw run 已在运行".to_string(),
+                    message: format!("ironclaw run 已在运行，tunnel 已重启 (pid={tunnel_pid})"),
                 });
             }
             Err(e) => {
@@ -1732,7 +1785,7 @@ fn start_ironclaw_run(app: tauri::AppHandle, state: tauri::State<AppState>) -> R
         return Ok(IronclawRunStatus {
             running: true,
             pid: None,
-            message: "检测到已有 ironclaw run 在运行".to_string(),
+            message: format!("检测到已有 ironclaw run 在运行，tunnel 已重启 (pid={tunnel_pid})"),
         });
     }
 
@@ -1779,15 +1832,16 @@ fn start_ironclaw_run(app: tauri::AppHandle, state: tauri::State<AppState>) -> R
         running: true,
         pid: Some(pid),
         message: if bundled_skills_synced > 0 {
-            format!("已启动 ironclaw run (pid={pid})，已同步 {bundled_skills_synced} 个内置技能")
+            format!("已启动 ironclaw run (pid={pid})，tunnel 已启动 (pid={tunnel_pid})，已同步 {bundled_skills_synced} 个内置技能")
         } else {
-            format!("已启动 ironclaw run (pid={pid})")
+            format!("已启动 ironclaw run (pid={pid})，tunnel 已启动 (pid={tunnel_pid})")
         },
     })
 }
 
 #[tauri::command]
 fn stop_ironclaw_run(state: tauri::State<AppState>) -> Result<IronclawRunStatus, String> {
+    let stopped_tunnel_pid = stop_tunnel_process(&state)?;
     let mut child_guard = state
         .ironclaw_child
         .lock()
@@ -1800,7 +1854,11 @@ fn stop_ironclaw_run(state: tauri::State<AppState>) -> Result<IronclawRunStatus,
                 return Ok(IronclawRunStatus {
                     running: false,
                     pid: None,
-                    message: "已停止外部启动的 ironclaw run 进程".to_string(),
+                    message: if let Some(tunnel_pid) = stopped_tunnel_pid {
+                        format!("已停止外部启动的 ironclaw run 进程，并停止 tunnel 进程 (pid={tunnel_pid})")
+                    } else {
+                        "已停止外部启动的 ironclaw run 进程".to_string()
+                    },
                 });
             }
             return Ok(IronclawRunStatus {
@@ -1812,7 +1870,11 @@ fn stop_ironclaw_run(state: tauri::State<AppState>) -> Result<IronclawRunStatus,
         return Ok(IronclawRunStatus {
             running: false,
             pid: None,
-            message: "当前没有由客户端启动的 ironclaw run 进程".to_string(),
+            message: if let Some(tunnel_pid) = stopped_tunnel_pid {
+                format!("当前没有由客户端启动的 ironclaw run 进程，已停止 tunnel 进程 (pid={tunnel_pid})")
+            } else {
+                "当前没有由客户端启动的 ironclaw run 进程".to_string()
+            },
         });
     };
 
@@ -1829,7 +1891,11 @@ fn stop_ironclaw_run(state: tauri::State<AppState>) -> Result<IronclawRunStatus,
     Ok(IronclawRunStatus {
         running: false,
         pid: None,
-        message: format!("已停止 ironclaw run 进程 (pid={pid})"),
+        message: if let Some(tunnel_pid) = stopped_tunnel_pid {
+            format!("已停止 ironclaw run 进程 (pid={pid})，并停止 tunnel 进程 (pid={tunnel_pid})")
+        } else {
+            format!("已停止 ironclaw run 进程 (pid={pid})")
+        },
     })
 }
 

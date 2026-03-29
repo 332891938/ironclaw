@@ -98,6 +98,7 @@ type WorkspaceConfig = {
   tunnelAddress: string;
   toolName: string;
   toolInstallSource: string;
+  skillName: string;
   skillInstallSource: string;
 };
 
@@ -123,6 +124,7 @@ const EMPTY_CONFIG: WorkspaceConfig = {
   tunnelAddress: "",
   toolName: "",
   toolInstallSource: "",
+  skillName: "",
   skillInstallSource: "",
 };
 
@@ -549,6 +551,10 @@ function App() {
   };
 
   const saveSkillConfig = async () => {
+    if (!workspaceConfig.skillName.trim()) {
+      setRuntimeResult("请输入技能名称");
+      return;
+    }
     if (!workspaceConfig.skillInstallSource.trim()) {
       setRuntimeResult("请输入技能 URL");
       return;
@@ -557,6 +563,7 @@ function App() {
     try {
       const result = await invokeTauri<SkillSaveResult>("save_skill_config", {
         payload: {
+          skillName: workspaceConfig.skillName,
           installSource: workspaceConfig.skillInstallSource,
         },
       });
@@ -1008,6 +1015,15 @@ function App() {
                   </button>
                 </div>
                 <form className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <label className={labelClassName}>
+                    技能名称
+                    <input
+                      className={inputClassName}
+                      placeholder="用于创建目录名，例如 my_skill"
+                      value={workspaceConfig.skillName}
+                      onChange={(event) => updateConfig("skillName", event.target.value)}
+                    />
+                  </label>
                   <label className={labelClassName}>
                     安装来源
                     <input
